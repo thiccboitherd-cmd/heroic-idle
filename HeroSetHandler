@@ -1,0 +1,166 @@
+-- ServerScriptService/GachaServer.lua
+-- Handles gacha rolling, stat upgrades, and auto-roll on first join
+-- NOTE: This script owns UpgradeStatEvent and RollGachaEvent.
+--       Do NOT add duplicate handlers in ServerSetup.lua or other scripts.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local UpgradeStatEvent = ReplicatedStorage:WaitForChild("UpgradeStatEvent")
+local RollGachaEvent = ReplicatedStorage:WaitForChild("RollGachaEvent")
+
+-- ==========================================
+-- RNG WEIGHT SYSTEM (100,000 scale for precision)
+-- ==========================================
+local function rollRarity()
+	local rng = math.random(1, 100000)
+	if rng > 60000 then return "Trash"         -- 40%
+	elseif rng > 30000 then return "Common"    -- 30%
+	elseif rng > 15000 then return "Uncommon"  -- 15%
+	elseif rng > 7000 then return "Rare"       -- 8%
+	elseif rng > 3000 then return "Elite"      -- 4%
+	elseif rng > 1000 then return "Epic"       -- 2%
+	elseif rng > 200 then return "Legendary"   -- 0.8%
+	elseif rng > 50 then return "Mythic"       -- 0.15%
+	else return "Secret" end                   -- 0.05%
+end
+
+-- ==========================================
+-- FULL GDD GACHA POOLS
+-- ==========================================
+local GachaPools = {
+	Quirk = {
+		Trash = {"Long Neck", "Eye Pop"},
+		Common = {"Tape", "Tail"},
+		Uncommon = {"Navel Laser", "Hardening"},
+		Rare = {"Acid", "Dark Shadow"},
+		Elite = {"Engine", "Brainwashing", "Electrification", "Zero Gravity"},
+		Epic = {"Permeation", "Fat Absorption"},
+		Legendary = {"Explosion", "Half-Cold", "Decay", "Overhaul"},
+		Mythic = {"Awakened Decay", "New Order", "Weather", "Rewind"},
+		Secret = {"One For All", "All For One"}
+	},
+	Trait = {
+		Trash = {"Clumsy", "Weak Grip"},
+		Common = {"Average Output", "Late Bloomer"},
+		Uncommon = {"Hyperactive", "Studious"},
+		Rare = {"Prodigy", "Savage"},
+		Elite = {"Iron Will", "Quick Thinker"},
+		Epic = {"Mutant Genes", "Awakened Potential"},
+		Legendary = {"Chosen One", "Indomitable"},
+		Mythic = {"Perfect Vessel", "Apex Predator"},
+		Secret = {"Quirk Singularity"}
+	},
+	Style = {
+		Trash = {"Flailing", "Sludge Brawling", "Fanboy"},
+		Common = {"Pipe", "Brass Knuckles", "Support Basics"},
+		Uncommon = {"Knife", "Shoot Style", "Boxer", "Acrobat"},
+		Rare = {"Judo", "Dual Knives", "Beast Stance"},
+		Elite = {"Gunhead Arts", "Sniper", "Capture Scarf"},
+		Epic = {"Yakuza", "Samurai", "Sumo", "Pro Hero Martial Arts"},
+		Legendary = {"Erasure Arts", "Hero Killer Flow", "Rabbit Arts", "Explosive CQC", "Artillery Gun-Fu"},
+		Mythic = {"Nomu Brawling", "Overclock"},
+		Secret = {"Prime All Might Stance", "Prime AFO Stance"}
+	}
+}
+
+-- ==========================================
+-- ROLL LOGIC
+-- ==========================================
+local function performRoll(player, category)
+	local stats = player:FindFirstChild("PlayerStats")
+	if not stats then return end
+
+	local targetValue = stats:FindFirstChild("Current" .. category)
+	if not targetValue then return end
+
+	local rarity = rollRarity()
+	local available = GachaPools[category][rarity]
+	if not available or #available == 0 then
+		available = GachaPools[category]["Common"]
+	end
+
+	local result = available[math.random(1, #available)]
+	targetValue.Value = result
+
+	-- Grant mastery XP
+	local masteryVal = stats:FindFirstChild(category .. "MasteryXP")
+	if masteryVal then
+		masteryVal.Value = masteryVal.Value + 10
+	end
+
+	print("[GachaServer] " .. player.Name .. " rolled " .. rarity .. " " .. category .. ": " .. result)
+end
+
+-- ==========================================
+-- AUTO-ROLL ON FIRST JOIN (if None)
+-- ==========================================
+Players.PlayerAdded:Connect(function(player)
+	local stats = player:WaitForChild("PlayerStats", 10)
+	if not stats then return end
+
+	task.wait(2) -- wait for data to load
+
+	if stats:FindFirstChild("CurrentQuirk") and stats.CurrentQuirk.Value == "None" then
+		performRoll(player, "Quirk")
+	end
+	if stats:FindFirstChild("CurrentTrait") and stats.CurrentTrait.Value == "None" then
+		performRoll(player, "Trait")
+	end
+	if stats:FindFirstChild("CurrentStyle") and stats.CurrentStyle.Value == "None" then
+		performRoll(player, "Style")
+	end
+end)
+
+-- Handle players already in server (Studio testing)
+for _, player in ipairs(Players:GetPlayers()) do
+	local stats = player:FindFirstChild("PlayerStats")
+	if stats then
+		task.defer(function()
+			task.wait(1)
+			if stats:FindFirstChild("CurrentQuirk") and stats.CurrentQuirk.Value == "None" then performRoll(player, "Quirk") end
+			if stats:FindFirstChild("CurrentTrait") and stats.CurrentTrait.Value == "None" then performRoll(player, "Trait") end
+			if stats:FindFirstChild("CurrentStyle") and stats.CurrentStyle.Value == "None" then performRoll(player, "Style") end
+		end)
+	end
+end
+
+-- ==========================================
+-- GACHA ROLL EVENT (costs 1 Spin)
+-- ==========================================
+RollGachaEvent.OnServerEvent:Connect(function(player, category)
+	if category ~= "Quirk" and category ~= "Trait" and category ~= "Style" then return end
+
+	local stats = player:FindFirstChild("PlayerStats")
+	if not stats then return end
+
+	local spins = stats:FindFirstChild("Spins")
+	if not spins or spins.Value < 1 then return end
+
+	spins.Value = spins.Value - 1
+	performRoll(player, category)
+end)
+
+-- ==========================================
+-- STAT UPGRADE EVENT (costs level * 10 Training XP)
+-- ==========================================
+UpgradeStatEvent.OnServerEvent:Connect(function(player, statName)
+	local stats = player:FindFirstChild("PlayerStats")
+	if not stats then return end
+
+	-- Validate stat name
+	local validStats = {Strength=true, Agility=true, Endurance=true, Intelligence=true, QuirkFactor=true}
+	if not validStats[statName] then return end
+
+	local stat = stats:FindFirstChild(statName)
+	local xp = stats:FindFirstChild("TrainingXP")
+	if not stat or not xp then return end
+
+	local cost = stat.Value * 10
+	if xp.Value >= cost then
+		xp.Value = xp.Value - cost
+		stat.Value = stat.Value + 1
+	end
+end)
+
+print("[GachaServer] Loaded — Gacha rolls, stat upgrades, and auto-roll active.")
