@@ -1,0 +1,51 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TrainEvent = ReplicatedStorage:WaitForChild("TrainEvent")
+local ChangeTaskEvent = ReplicatedStorage:WaitForChild("ChangeTaskEvent")
+
+local trainCooldowns = {}
+
+-- 1. Handle Active Training (Clicking)
+TrainEvent.OnServerEvent:Connect(function(player)
+	if trainCooldowns[player.UserId] and os.clock() - trainCooldowns[player.UserId] < 0.1 then 
+		return 
+	end
+	trainCooldowns[player.UserId] = os.clock()
+
+	local stats = player:FindFirstChild("PlayerStats")
+	if stats then
+		local trainingXP = stats:FindFirstChild("TrainingXP")
+		local multiplier = 1 + (player.leaderstats.Rebirths.Value * 0.5)
+		local gain = math.floor(1 * multiplier)
+		trainingXP.Value += gain
+		local gain = math.max(1)
+		spins.Value += gain
+	end
+end)
+
+-- 2. The Updated Valid Tasks Dictionary!
+local validTasks = {
+	["None"] = true, -- Crucial so the STOP button works!
+	["Cleaning Beach"] = true,
+	["Campus Patrol"] = true,
+	["Agency Desk"] = true,
+	["TV Commercial"] = true,
+	["Night Patrol"] = true,
+	["Community Gym"] = true,
+	["U.A. Gym Gamma"] = true,
+	["U.S.J. Fire Zone"] = true,
+	["Sports Fest Ring"] = true,
+	["Gran Torino's Apt"] = true
+}
+
+-- 3. Handle Task Switching
+ChangeTaskEvent.OnServerEvent:Connect(function(player, newTaskName)
+	if validTasks[newTaskName] then
+		local stats = player:FindFirstChild("PlayerStats")
+		if stats then
+			local activeTask = stats:FindFirstChild("ActiveTask")
+			activeTask.Value = newTaskName
+		end
+	else
+		warn(player.Name .. " tried to equip an invalid task: " .. tostring(newTaskName))
+	end
+end)
