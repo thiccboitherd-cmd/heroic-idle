@@ -1,0 +1,42 @@
+local Players = game:GetService("Players")
+
+-- Task Data (Total Per Minute values)
+local Tasks = {
+	-- Side Hustles (Coins)
+	["Cleaning Beach"] = {Type = "HeroCoins", Amount = 10},
+	["Campus Patrol"] = {Type = "HeroCoins", Amount = 50},
+	["Agency Desk"] = {Type = "HeroCoins", Amount = 200},
+	["TV Commercial"] = {Type = "HeroCoins", Amount = 800},
+	["Night Patrol"] = {Type = "HeroCoins", Amount = 2500},
+
+	-- Training Areas (XP)
+	["Community Gym"] = {Type = "TrainingXP", Amount = 15},
+	["U.A. Gym Gamma"] = {Type = "TrainingXP", Amount = 75},
+	["U.S.J. Fire Zone"] = {Type = "TrainingXP", Amount = 300},
+	["Sports Fest Ring"] = {Type = "TrainingXP", Amount = 1200},
+	["Gran Torino's Apt"] = {Type = "TrainingXP", Amount = 4000}
+}
+
+local function AFKLoop()
+	-- Tick every 6 seconds for better visual feedback!
+	while task.wait(6) do 
+		for _, player in ipairs(Players:GetPlayers()) do
+			local stats = player:FindFirstChild("PlayerStats")
+			if stats then
+				local currentTask = stats.ActiveTask.Value
+				local taskData = Tasks[currentTask]
+
+				if taskData then
+					local multiplier = 1 + (player.leaderstats.Rebirths.Value * 0.5) 
+					-- Divide by 10 because this loop runs 10 times a minute
+					local gain = math.max(1, math.floor((taskData.Amount / 10) * multiplier))
+
+					stats[taskData.Type].Value += gain
+				end
+			end
+		end
+	end
+end
+
+-- Start the loop in a separate thread
+task.spawn(AFKLoop)
