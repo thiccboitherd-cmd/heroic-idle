@@ -721,6 +721,30 @@ local function playInkSplash(callback: (() -> ())?)
 end
 
 -- ==========================================
+-- VISUAL FX: SCREEN SHAKE (Combat Flashiness)
+-- ==========================================
+local function screenShake(intensity: number?, duration: number?)
+	local int = intensity or 8
+	local dur = duration or 0.3
+	local target = G.pages["COMBAT"]
+	if not target then return end
+	local origPos = target.Position
+	task.spawn(function()
+		local elapsed = 0
+		local step = 0.03
+		while elapsed < dur do
+			local ox = math.random(-int, int)
+			local oy = math.random(-int, int)
+			target.Position = origPos + UDim2.new(0, ox, 0, oy)
+			task.wait(step)
+			elapsed += step
+			int = math.floor(int * 0.85)
+		end
+		target.Position = origPos
+	end)
+end
+
+-- ==========================================
 -- TOAST NOTIFICATION SYSTEM
 -- ==========================================
 -- moved to G
@@ -1390,6 +1414,29 @@ local function BuildGachaSystem()
 		gachaRarityLabel.Gui.TextColor3 = rColor
 
 		local isHighRarity = (finalRarity == "Secret" or finalRarity == "Mythic" or finalRarity == "Legendary")
+		local rarityTier = ({Trash=1,Common=2,Uncommon=3,Rare=4,Elite=5,Epic=6,Legendary=7,Mythic=8,Secret=9})[finalRarity] or 1
+
+		-- Particle burst scaled by rarity (all rarities get particles)
+		local burstCount = rarityTier * 3
+		task.spawn(function()
+			for _ = 1, burstCount do
+				local p = Instance.new("Frame", gachaOverlay)
+				p.Size = UDim2.new(0, math.random(4, 10), 0, math.random(4, 10))
+				p.Position = UDim2.new(0.5, 0, 0.4, 0)
+				p.BackgroundColor3 = rColor; p.BorderSizePixel = 0
+				p.Rotation = math.random(0, 360); p.ZIndex = 102
+				Instance.new("UICorner", p).CornerRadius = UDim.new(1, 0)
+				local tx = math.random(-200, 200)
+				local ty = math.random(-250, 50)
+				TweenService:Create(p, TweenInfo.new(0.6 + math.random() * 0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+					Position = p.Position + UDim2.new(0, tx, 0, ty),
+					BackgroundTransparency = 1,
+					Size = UDim2.new(0, 2, 0, 2)
+				}):Play()
+				task.delay(1.2, function() p:Destroy() end)
+			end
+		end)
+		if rarityTier >= 6 then showOnomatopoeia("PLUS ULTRA!", nil, rColor) end
 
 		if isHighRarity then
 			flashFrame.BackgroundColor3 = rColor; flashFrame.BackgroundTransparency = 0.2
@@ -1397,6 +1444,7 @@ local function BuildGachaSystem()
 			gachaScale.Scale = 1.7
 			TweenService:Create(gachaScale, TweenInfo.new(0.7, Enum.EasingStyle.Bounce), {Scale = 1}):Play()
 			flashSpeedLines(20, rColor, 0.8)
+			screenShake(8, 0.3)
 			showToast("🌟 " .. finalRarity:upper() .. "! " .. finalItem, rColor, 5)
 			task.wait(4)
 		else
@@ -1522,7 +1570,21 @@ local function BuildTrainingPage()
 		end
 		statVal.Changed:Connect(function() upd(); showToast("📈 "..stat.short.." → Lvl."..statVal.Value, stat.color) end)
 		trainingXPVal.Changed:Connect(upd); upd()
-		btn.MouseButton1Click:Connect(function() UpgradeStatEvent:FireServer(stat.name) end)
+		-- Hold-to-rapidly-upgrade: fires immediately on press, then repeats while held
+		local holding = false
+		btn.MouseButton1Down:Connect(function()
+			holding = true
+			UpgradeStatEvent:FireServer(stat.name)
+			task.spawn(function()
+				task.wait(0.4)
+				while holding do
+					UpgradeStatEvent:FireServer(stat.name)
+					task.wait(0.1)
+				end
+			end)
+		end)
+		btn.MouseButton1Up:Connect(function() holding = false end)
+		btn.MouseLeave:Connect(function() holding = false end)
 	end
 
 	-- Divider
@@ -1550,10 +1612,16 @@ local function BuildTrainingPage()
 		local rb = Instance.new("TextButton", row)
 		rb.Size = UDim2.new(0.32, 0, 0.78, 0); rb.AnchorPoint = Vector2.new(1, 0.5)
 		rb.Position = UDim2.new(1, -3, 0.5, 0); rb.BackgroundColor3 = PALETTE.PanelHighlight
-		rb.BorderSizePixel = 0; rb.Text = "ROLL"; rb.Font = Enum.Font.GothamBold
+		rb.BorderSizePixel = 0; rb.Text = "ROLL (0)"; rb.Font = Enum.Font.GothamBold
 		rb.TextSize = 10; rb.TextColor3 = PALETTE.TextPrimary; rb.AutoButtonColor = false
 		Instance.new("UICorner", rb).CornerRadius = UDim.new(0, 5)
 		applyHoverEffect(rb, 1.06, 18)
+		-- Show spin count on roll button
+		local function updateRollText()
+			rb.Text = "ROLL (" .. spinsVal.Value .. ")"
+			rb.TextColor3 = spinsVal.Value > 0 and PALETTE.TextPrimary or PALETTE.TextLocked
+		end
+		spinsVal.Changed:Connect(updateRollText); updateRollText()
 		rb.MouseButton1Click:Connect(function()
 			if G.isRollingActive then return end
 			G.isRollingCategory[category] = true
@@ -2149,6 +2217,10 @@ local function BuildInventoryPage()
 
 	-- Initial load
 	loadMoves()
+
+	-- Auto-refresh moves when quirk or style changes (e.g. after gacha roll)
+	statsFolder:WaitForChild("CurrentQuirk").Changed:Connect(function() loadMoves() end)
+	statsFolder:WaitForChild("CurrentStyle").Changed:Connect(function() loadMoves() end)
 end
 
 
@@ -4275,6 +4347,37 @@ local function BuildCombatPage()
 end
 
 -- ==========================================
+-- COMBAT: KEYBOARD SHORTCUTS (Keys 1-5)
+-- ==========================================
+local UserInputService = game:GetService("UserInputService")
+local combatKeyMap = {
+	[Enum.KeyCode.One] = 1, [Enum.KeyCode.Two] = 2, [Enum.KeyCode.Three] = 3,
+	[Enum.KeyCode.Four] = 4, [Enum.KeyCode.Five] = 5,
+}
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if G.currentTab ~= "COMBAT" then return end
+	local idx = combatKeyMap[input.KeyCode]
+	if not idx then return end
+	local count = 0
+	for _, child in ipairs(G.movesScrollGui:GetChildren()) do
+		if child:IsA("TextButton") and child.Active then
+			count += 1
+			if count == idx then
+				local moveId = child:GetAttribute("MoveId")
+				if moveId and G.selectedTargetId then
+					CombatActionEvent:FireServer(moveId, G.selectedTargetId)
+					for _, c2 in ipairs(G.movesScrollGui:GetChildren()) do
+						if c2:IsA("TextButton") then c2.Active = false; c2.BackgroundTransparency = 0.6 end
+					end
+				end
+				break
+			end
+		end
+	end
+end)
+
+-- ==========================================
 -- COMBAT HELPERS: Combatant Cards with Breathing Animation
 -- ==========================================
 -- moved to G
@@ -4329,6 +4432,14 @@ local function createCombatant(name: string, isEnemy: boolean, maxHp: number, po
 	end
 
 	local uiScale = Instance.new("UIScale", card.Gui)
+
+	-- Hit flash overlay for damage feedback
+	local hitFlash = Instance.new("Frame", card.Gui)
+	hitFlash.Size = UDim2.new(1, 0, 1, 0)
+	hitFlash.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	hitFlash.BackgroundTransparency = 1
+	hitFlash.ZIndex = 10
+	Instance.new("UICorner", hitFlash).CornerRadius = UDim.new(0, 8)
 
 	local pSize = isBoss and 72 or 56
 	local portraitFrame = Instance.new("Frame", card.Gui)
@@ -4423,6 +4534,10 @@ local function createCombatant(name: string, isEnemy: boolean, maxHp: number, po
 	end
 
 	local function triggerDamage()
+		-- White hit flash
+		hitFlash.BackgroundTransparency = 0.3
+		TweenService:Create(hitFlash, TweenInfo.new(0.25), {BackgroundTransparency = 1}):Play()
+		-- Portrait red flash + card shake
 		portraitFrame.BackgroundColor3 = Color3.fromRGB(255, 40, 40)
 		TweenService:Create(portraitFrame, TweenInfo.new(0.45), {BackgroundColor3 = PALETTE.PanelCard}):Play()
 		TweenService:Create(card.Gui, TweenInfo.new(0.05), {Rotation = 3}):Play()
@@ -4531,7 +4646,17 @@ local function updateCombatUI(combatState)
 	end
 
 	if not combatState.IsActive and combatState.Result then
+		-- Dramatic result overlay entrance
 		G.resultOverlay.Visible = true
+		G.resultOverlay.BackgroundTransparency = 1
+		TweenService:Create(G.resultOverlay, TweenInfo.new(0.5), {BackgroundTransparency = 0.08}):Play()
+		local resultPanel = G.resultOverlay:FindFirstChild("ResultPanel")
+		if resultPanel then
+			local panelScale = resultPanel:FindFirstChildOfClass("UIScale") or Instance.new("UIScale", resultPanel)
+			panelScale.Scale = 0.3
+			TweenService:Create(panelScale, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+		end
+
 		for _, child in ipairs(G.rewardsContainer:GetChildren()) do
 			if child:IsA("TextLabel") or child:IsA("Frame") then child:Destroy() end
 		end
@@ -4540,7 +4665,9 @@ local function updateCombatUI(combatState)
 			G.resultTitle:SetText("⚡ VICTORY!")
 			G.resultTitle.Gui.TextColor3 = PALETTE.BrightYellow
 			G.resultDesc:SetText("Zone cleared. Rewards acquired:")
-			flashSpeedLines(16, PALETTE.BrightYellow, 1)
+			flashSpeedLines(20, PALETTE.BrightYellow, 1.5)
+			showOnomatopoeia("VICTORY!", nil, PALETTE.BrightYellow)
+			screenShake(6, 0.2)
 			showToast("⚡ VICTORY!", PALETTE.BrightYellow, 4)
 
 			for rewardName, amount in pairs(combatState.Result.Rewards) do
@@ -4560,7 +4687,8 @@ local function updateCombatUI(combatState)
 			G.resultTitle:SetText("✕ DEFEAT")
 			G.resultTitle.Gui.TextColor3 = PALETTE.HeroRed
 			G.resultDesc:SetText("Train harder and retry.")
-			showPanelCrack(2)
+			showPanelCrack(3)
+			screenShake(12, 0.4)
 			showToast("💀 Defeated...", PALETTE.HeroRed, 4)
 		end
 		G.combatantCards = {}; G.selectedTargetId = nil
@@ -4646,10 +4774,14 @@ local function updateCombatUI(combatState)
 					)
 
 					-- GDD 2.1.3: Onomatopoeia for 150%+ base damage
-					if isCrit then flashSpeedLines(12, PALETTE.BrightYellow, 0.4) end
+					if isCrit then
+						flashSpeedLines(12, PALETTE.BrightYellow, 0.4)
+						screenShake(5, 0.15)
+					end
 					if isMassive then
 						showOnomatopoeia()
 						showPanelCrack()
+						screenShake(10, 0.3)
 					end
 				end)
 			end
@@ -4695,12 +4827,18 @@ local function updateCombatUI(combatState)
 		local keyHint = (i <= 5) and tostring(i) or nil
 		local moveData = createMove(i, move.Name, move.Type, move.Desc, move.IsQuirk, keyHint)
 		moveData.SetState(move.State)
+		moveData.Button.Gui:SetAttribute("MoveId", move.Id)
 
 		if not isMyTurn or move.State == "Erasure" then
 			moveData.Button.Gui.Active = false; moveData.Button.Gui.BackgroundTransparency = 0.6
 		else
 			moveData.Button:OnClick(function()
 				if G.selectedTargetId then
+					-- Button press flash feedback
+					local origColor = moveData.Button.Gui.BackgroundColor3
+					moveData.Button.Gui.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+					TweenService:Create(moveData.Button.Gui, TweenInfo.new(0.15), {BackgroundColor3 = origColor}):Play()
+
 					CombatActionEvent:FireServer(move.Id, G.selectedTargetId)
 					for _, child in ipairs(G.movesScrollGui:GetChildren()) do
 						if child:IsA("TextButton") then child.Active = false; child.BackgroundTransparency = 0.6 end

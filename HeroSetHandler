@@ -83,6 +83,17 @@ local function performRoll(player, category)
 	local result = available[math.random(1, #available)]
 	targetValue.Value = result
 
+	-- Clear move slots when quirk or style changes (prevent stale moves)
+	if category == "Quirk" or category == "Style" then
+		for i = 1, 4 do
+			local slot = stats:FindFirstChild("MoveSlot" .. i)
+			if slot then slot.Value = "" end
+		end
+		-- Auto-equip basic_strike so player isn't left with no moves
+		local slot1 = stats:FindFirstChild("MoveSlot1")
+		if slot1 then slot1.Value = "basic_strike" end
+	end
+
 	-- Grant mastery XP
 	local masteryVal = stats:FindFirstChild(category .. "MasteryXP")
 	if masteryVal then
