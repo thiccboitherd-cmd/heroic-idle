@@ -1,0 +1,560 @@
+-- ServerScriptService/PatrolServer.lua
+-- Full GDD Section 8 Patrol System
+-- Generates encounters, validates minigame results, awards rewards
+-- Owns: PatrolEvent
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local PatrolEvent = ReplicatedStorage:WaitForChild("PatrolEvent")
+local StartCombatEvent = ReplicatedStorage:FindFirstChild("StartCombatEvent")
+
+-- ==========================================
+-- ENCOUNTER DATABASES (GDD 8.5-8.8)
+-- ==========================================
+
+local CombatEncounters = {
+	-- ─── 1★ EASY ───
+	{
+		title = "Purse Snatcher!", difficulty = 1, icon = "⚔",
+		desc = "A petty thief snatches a woman's purse and bolts down an alley. Time to show what heroes are made of!",
+		dialogue = "CIVILIAN: \"Stop that thief! He took my bag!\"",
+		staminaCost = 4, patrolScore = 5, patrolEnemyKey = "Purse_Snatcher",
+		rewards = {HeroCoins = 20, TrainingXP = 15},
+	},
+	{
+		title = "Shoplifter Pursuit!", difficulty = 1, icon = "⚔",
+		desc = "A shoplifter bolts from the convenience store, arms full of stolen goods. The owner shouts for help.",
+		dialogue = "SHOPKEEPER: \"They didn't pay! Please, I can't afford to lose inventory!\"",
+		staminaCost = 4, patrolScore = 4, patrolEnemyKey = "Purse_Snatcher",
+		rewards = {HeroCoins = 15, TrainingXP = 12},
+	},
+	{
+		title = "Drunk and Disorderly!", difficulty = 1, icon = "⚔",
+		desc = "A large man is stumbling around the intersection, swinging at lampposts and scaring pedestrians. He seems out of control.",
+		dialogue = "BYSTANDER: \"He's been at it for an hour! Someone do something!\"",
+		staminaCost = 4, patrolScore = 5, patrolEnemyKey = "Purse_Snatcher",
+		rewards = {HeroCoins = 18, TrainingXP = 14},
+	},
+	{
+		title = "Graffiti Vandals!", difficulty = 1, icon = "⚔",
+		desc = "A group of teens spray-painting the school walls. When they see you, one of them gets aggressive.",
+		dialogue = "VANDAL: \"This is OUR turf! Back off, cape boy!\"",
+		staminaCost = 4, patrolScore = 4, patrolEnemyKey = "Purse_Snatcher",
+		rewards = {HeroCoins = 16, TrainingXP = 12},
+	},
+	-- ─── 2★ MEDIUM ───
+	{
+		title = "Street Thugs!", difficulty = 2, icon = "⚔",
+		desc = "A group of troublemakers are harassing civilians near the shopping district. They don't look happy to see you.",
+		dialogue = "THUG: \"Mind your own business, hero wannabe!\"",
+		staminaCost = 6, patrolScore = 10, patrolEnemyKey = "Street_Thugs",
+		rewards = {HeroCoins = 40, TrainingXP = 30},
+	},
+	{
+		title = "Armed Robbery!", difficulty = 2, icon = "⚔",
+		desc = "An alarm blares from the bank across the street. Two masked figures burst through the doors carrying bags of cash.",
+		dialogue = "BANK GUARD: \"They've got Quirks! I couldn't stop them!\"",
+		staminaCost = 7, patrolScore = 12, patrolEnemyKey = "Armed_Robbery",
+		rewards = {HeroCoins = 50, TrainingXP = 40},
+	},
+	{
+		title = "Drug Deal Gone Wrong!", difficulty = 2, icon = "⚔",
+		desc = "Shouting erupts from an alley. Two groups of shady characters are squaring off. Civilians are caught in the middle.",
+		dialogue = "CIVILIAN: \"They've got weapons! Please help us get out!\"",
+		staminaCost = 6, patrolScore = 10, patrolEnemyKey = "Street_Thugs",
+		rewards = {HeroCoins = 45, TrainingXP = 35},
+	},
+	{
+		title = "Gang Turf War!", difficulty = 2, icon = "⚔",
+		desc = "Two rival gangs are clashing in the park. A family is trapped on a bench between them.",
+		dialogue = "FATHER: \"My kids are right here! Someone stop this!\"",
+		staminaCost = 7, patrolScore = 11, patrolEnemyKey = "Armed_Robbery",
+		rewards = {HeroCoins = 48, TrainingXP = 38},
+	},
+	{
+		title = "Rogue Vigilante!", difficulty = 2, icon = "⚔",
+		desc = "An unlicensed vigilante is beating up a suspect way too aggressively. The police can't restrain them.",
+		dialogue = "OFFICER: \"They're going too far! We need a licensed hero!\"",
+		staminaCost = 6, patrolScore = 10, patrolEnemyKey = "Street_Thugs",
+		rewards = {HeroCoins = 42, TrainingXP = 32},
+	},
+	-- ─── 3★ HARD ───
+	{
+		title = "Villain Sighting!", difficulty = 3, icon = "⚔",
+		desc = "A known villain has been spotted causing destruction. Police have cordoned off the area — they need hero backup.",
+		dialogue = "OFFICER: \"We're outmatched here. This one's got a dangerous Quirk!\"",
+		staminaCost = 8, patrolScore = 15, patrolEnemyKey = "Patrol_Villain",
+		rewards = {HeroCoins = 80, TrainingXP = 60},
+	},
+	{
+		title = "Escaped Convict!", difficulty = 3, icon = "⚔",
+		desc = "A prisoner transport was ambushed. A dangerous convict is loose in the residential district!",
+		dialogue = "DISPATCH: \"Subject is extremely dangerous. Approach with caution!\"",
+		staminaCost = 8, patrolScore = 16, patrolEnemyKey = "Patrol_Villain",
+		rewards = {HeroCoins = 90, TrainingXP = 65},
+	},
+	{
+		title = "Yakuza Shakedown!", difficulty = 3, icon = "⚔",
+		desc = "Yakuza enforcers are demanding protection money from local businesses. The shopkeepers look terrified.",
+		dialogue = "SHOPKEEPER: \"They said they'd destroy everything if we don't pay by tonight!\"",
+		staminaCost = 8, patrolScore = 15, patrolEnemyKey = "Patrol_Villain",
+		rewards = {HeroCoins = 85, TrainingXP = 62},
+	},
+	{
+		title = "Underground Fight Ring!", difficulty = 3, icon = "⚔",
+		desc = "You discover an illegal underground fighting ring. The fighters spot you and don't intend to let you leave.",
+		dialogue = "ANNOUNCER: \"Looks like we have an uninvited guest! Get them!\"",
+		staminaCost = 8, patrolScore = 17, patrolEnemyKey = "Patrol_Villain",
+		rewards = {HeroCoins = 95, TrainingXP = 70},
+	},
+}
+
+local ObjectiveEncounters = {
+	-- RESCUE (GDD 8.6.1)
+	{
+		title = "Kitten in a Tree!", difficulty = 1, icon = "❗", category = "Rescue",
+		desc = "A crying child stands beneath a tall oak tree. A tabby kitten clings to a branch, meowing pitifully. Cherry blossom petals drift across the scene.",
+		dialogue = "CHILD: \"Mr. Hero! Mochi is stuck up there! Please help!\"",
+		staminaCost = 3, minigameType = "ReactionTest",
+		minigameDesc = "Click the falling targets to climb the tree! Reach the kitten before time runs out.",
+		timeLimit = 15, targetCount = 8,
+		rewards = {
+			perfect = {HeroCoins = 40, TrainingXP = 30, patrolScore = 8, text = "Perfect Rescue! Kitten saved in record time!"},
+			success = {HeroCoins = 25, TrainingXP = 15, patrolScore = 5, text = "Kitten rescued! The child hugs you gratefully."},
+			failure = {HeroCoins = 5, TrainingXP = 0, patrolScore = 1, text = "Timer expired... The fire department is on their way."},
+		},
+	},
+	{
+		title = "Collapsing Building!", difficulty = 3, icon = "❗", category = "Rescue",
+		desc = "A multi-story apartment groans and tilts. Dust cascades from cracks. Three civilians are visible in windows on different floors. Emergency sirens blare.",
+		dialogue = "BYSTANDER: \"The support beams are giving out! There are people still inside!\"",
+		staminaCost = 5, minigameType = "SequenceOrder",
+		minigameDesc = "Rescue civilians in the right order! Floor 5 collapses first, then Floor 3. Choose wisely!",
+		timeLimit = 20, targetCount = 3,
+		rewards = {
+			perfect = {HeroCoins = 200, TrainingXP = 100, Spins = 1, patrolScore = 20, text = "ALL THREE SAVED! You're a true hero!"},
+			success = {HeroCoins = 100, TrainingXP = 50, patrolScore = 12, text = "Two civilians rescued. One was saved by firefighters."},
+			failure = {HeroCoins = 10, TrainingXP = 0, patrolScore = 1, text = "The rescue teams arrived... but you know you could have done more."},
+		},
+	},
+	{
+		title = "Traffic Pileup!", difficulty = 2, icon = "❗", category = "Rescue",
+		desc = "A truck has jackknifed at a busy intersection. Cars honking, fuel leaking, sparking dangerously. A mother struggles to free her child from a crumpled car door.",
+		dialogue = "DISPATCH: \"We need someone on-site NOW. Multiple civilians, possible fire hazard.\"",
+		staminaCost = 4, minigameType = "PriorityChoice",
+		minigameDesc = "Three crises at once! Choose the right order: Rescue, Fuel Leak, Traffic. Warning: Fuel ignites in 18 seconds!",
+		timeLimit = 25, targetCount = 3,
+		rewards = {
+			perfect = {HeroCoins = 120, TrainingXP = 80, patrolScore = 15, text = "Hero of the Hour! All crises resolved!"},
+			success = {HeroCoins = 70, TrainingXP = 40, patrolScore = 10, text = "Situation handled. Minor collateral damage."},
+			failure = {HeroCoins = 25, TrainingXP = 15, patrolScore = 3, text = "The fuel ignited... backup heroes contained it."},
+		},
+	},
+	-- COMMUNITY SERVICE (GDD 8.6.2)
+	{
+		title = "Lost Child!", difficulty = 1, icon = "❗", category = "Community",
+		desc = "A small child stands at a crossroads with teary eyes. Crowds walk past without stopping.",
+		dialogue = "CHILD: \"I-I can't find my mommy... She said she'd be by the fountain, but I don't know which way...\"",
+		staminaCost = 3, minigameType = "MazeNavigate",
+		minigameDesc = "Guide the child through the streets to the fountain! Avoid dead ends — they scare the child!",
+		timeLimit = 30, targetCount = 4,
+		rewards = {
+			perfect = {HeroCoins = 50, TrainingXP = 20, patrolScore = 8, text = "Direct route! The child's mom is overjoyed!"},
+			success = {HeroCoins = 30, TrainingXP = 10, patrolScore = 5, text = "Got there eventually! Child: \"That was an adventure!\""},
+			failure = {HeroCoins = 15, TrainingXP = 5, patrolScore = 3, text = "The child found their way... with a little help from a kind stranger."},
+		},
+	},
+	{
+		title = "Help the Vendor!", difficulty = 1, icon = "❗", category = "Community",
+		desc = "A takoyaki stand has been knocked over by wind. Ingredients scattered everywhere. The elderly vendor scrambles to pick up.",
+		dialogue = "VENDOR: \"Oh dear... The lunch rush starts in five minutes! Could you lend an old man a hand?\"",
+		staminaCost = 3, minigameType = "SpeedSort",
+		minigameDesc = "Sort the scattered items into the correct bins! Faster = better rewards!",
+		timeLimit = 20, targetCount = 12,
+		rewards = {
+			perfect = {HeroCoins = 45, TrainingXP = 15, patrolScore = 8, text = "Lightning hands! The vendor gives you free takoyaki!"},
+			success = {HeroCoins = 25, TrainingXP = 10, patrolScore = 5, text = "Helpful hero! The vendor is grateful."},
+			failure = {HeroCoins = 10, TrainingXP = 0, patrolScore = 2, text = "Vendor: \"It's the thought that counts!\""},
+		},
+	},
+	{
+		title = "Neighborhood Watch!", difficulty = 2, icon = "❗", category = "Community",
+		desc = "An anxious shopkeeper peers out from their counter. The street is dark and deserted. Graffiti marks cover walls.",
+		dialogue = "SHOPKEEPER: \"Some punks have been tagging up the whole block. Patrol the area and scare them off!\"",
+		staminaCost = 4, minigameType = "ReactionTest",
+		minigameDesc = "Click the vandals before they spot you and run! Catch all 3 groups for a perfect score!",
+		timeLimit = 18, targetCount = 6,
+		rewards = {
+			perfect = {HeroCoins = 80, TrainingXP = 50, patrolScore = 12, text = "Clean Sweep! All vandals caught. Shopkeeper gives you a discount!"},
+			success = {HeroCoins = 40, TrainingXP = 25, patrolScore = 7, text = "Partial deterrent. Some got away, but the message is clear."},
+			failure = {HeroCoins = 15, TrainingXP = 5, patrolScore = 2, text = "Shopkeeper: \"Well... at least you tried.\""},
+		},
+	},
+	-- HEROIC DILEMMA (GDD 8.6.3)
+	{
+		title = "The Informant", difficulty = 3, icon = "❗", category = "Dilemma",
+		desc = "A back alley. A nervous man in a trench coat fidgets under a flickering streetlight. He recognizes you as a hero.",
+		dialogue = "INFORMANT: \"I know where the League is hiding. But if I tell you... I need protection. And money. Lots of it.\"",
+		staminaCost = 4, minigameType = "DialogueChoice",
+		minigameDesc = "Choose your response carefully. Your decision has consequences.",
+		choices = {
+			{text = "I'll protect you. Tell me everything.", reward = {HeroCoins = 100, TrainingXP = 60, patrolScore = 15}, outcome = "The informant reveals a villain hideout. +1 bonus combat encounter with rare loot!"},
+			{text = "I can't make promises. But I can try.", reward = {HeroCoins = 50, TrainingXP = 30, patrolScore = 8}, outcome = "He gives you partial info. A lead, but not the whole picture."},
+			{text = "Turn yourself in. I'll put in a good word.", reward = {HeroCoins = 30, TrainingXP = 20, patrolScore = 5}, outcome = "He hesitates... then walks toward the police station. The right thing isn't always easy."},
+		},
+	},
+}
+
+local BonusEncounters = {
+	-- PACHINKO (GDD 8.8.1)
+	{
+		title = "Plus Ultra Pachinko!", difficulty = 0, icon = "⭐", category = "Pachinko",
+		desc = "A brightly lit Pachinko parlor wedged between two buildings. A neon sign flashes: 'PLUS ULTRA PACHINKO — Heroes Play Free!'",
+		dialogue = "PARLOR OWNER: \"Hey, hero student! One free game, on the house. For the publicity.\"",
+		staminaCost = 0, minigameType = "Pachinko",
+		minigameDesc = "Launch the ball and watch it bounce! Where it lands determines your prize!",
+		slots = {
+			{label = "Dud", reward = {HeroCoins = 5}, chance = 15, patrolScore = 3},
+			{label = "Small Win", reward = {HeroCoins = 25}, chance = 25, patrolScore = 3},
+			{label = "Nice!", reward = {HeroCoins = 50, TrainingXP = 25}, chance = 22, patrolScore = 3},
+			{label = "JACKPOT!", reward = {HeroCoins = 200, TrainingXP = 100, Spins = 1}, chance = 12, patrolScore = 10},
+			{label = "Nice!", reward = {HeroCoins = 50, TrainingXP = 25}, chance = 14, patrolScore = 3},
+			{label = "Small Win", reward = {HeroCoins = 25}, chance = 10, patrolScore = 3},
+			{label = "MEGA JACKPOT!", reward = {HeroCoins = 500, Spins = 3}, chance = 2, patrolScore = 10},
+		},
+	},
+	-- LUCKY FIND (GDD 8.8.2)
+	{
+		title = "Lucky Find!", difficulty = 0, icon = "⭐", category = "LuckyFind",
+		desc = "Your foot catches on something half-buried in the rubble. It glows faintly...",
+		dialogue = "NARRATION: \"Is that... treasure?\"",
+		staminaCost = 0, minigameType = "LootReveal",
+		lootTable = {
+			{label = "Common Find", reward = {HeroCoins = math.random(10, 50)}, chance = 50, patrolScore = 2},
+			{label = "Useful Scrap", reward = {TrainingXP = math.random(25, 75)}, chance = 25, patrolScore = 2},
+			{label = "Hidden Cache", reward = {HeroCoins = 100, Spins = 1}, chance = 15, patrolScore = 5},
+			{label = "Buried Treasure", reward = {HeroCoins = 250}, chance = 8, patrolScore = 8},
+			{label = "Ancient Relic", reward = {HeroCoins = 500, Spins = 3}, chance = 2, patrolScore = 15},
+		},
+	},
+	-- FAN ENCOUNTER (GDD 8.8.3)
+	{
+		title = "Fan Encounter!", difficulty = 0, icon = "⭐", category = "Fan",
+		desc = "A civilian spots you and runs up, eyes sparkling with excitement!",
+		staminaCost = 0, minigameType = "DialogueChoice",
+		choices = {
+			{text = "\"Of course! Always happy to meet a fan!\"", reward = {HeroCoins = 30, patrolScore = 5}, outcome = "The fan beams! +5% damage for next 2 fights!"},
+			{text = "\"Sorry, I'm on patrol. Maybe later?\"", reward = {HeroCoins = 10, patrolScore = 2}, outcome = "The fan understands. They wave as you continue."},
+			{text = "\"Want to see something cool?\" (Show off)", reward = {HeroCoins = 50, patrolScore = 8}, outcome = "The fan is starstruck! They cheer you on from the sidelines!"},
+		},
+	},
+	-- PRO HERO CAMEO (GDD 8.8.4)
+	{
+		title = "Pro Hero Cameo!", difficulty = 0, icon = "⭐", category = "ProHero",
+		desc = "A Pro Hero appears during your patrol and offers advice!",
+		staminaCost = 0, minigameType = "BuffSelect",
+		heroes = {
+			{name = "All Might", buff = "+20% STR for 3 fights", reward = {TrainingXP = 50, patrolScore = 5}},
+			{name = "Eraserhead", buff = "+15% AGI for 3 fights", reward = {TrainingXP = 50, patrolScore = 5}},
+			{name = "Present Mic", buff = "+25% QF for 3 fights", reward = {TrainingXP = 50, patrolScore = 5}},
+			{name = "Midnight", buff = "+10% Crit for 3 fights", reward = {TrainingXP = 50, patrolScore = 5}},
+			{name = "Best Jeanist", buff = "+30% END for 3 fights", reward = {TrainingXP = 50, patrolScore = 5}},
+		},
+	},
+}
+
+-- ==========================================
+-- PLAYER PATROL STATE
+-- ==========================================
+local PatrolSessions = {} -- [player] = {score, encounterCount, stamina, currentEncounter, ...}
+
+local function getOrCreateSession(player)
+	if not PatrolSessions[player] then
+		PatrolSessions[player] = {
+			score = 0, encounterCount = 0, active = false,
+			currentEncounter = nil, pachinkoUsed = false,
+		}
+	end
+	return PatrolSessions[player]
+end
+
+Players.PlayerRemoving:Connect(function(p) PatrolSessions[p] = nil end)
+
+-- ==========================================
+-- ENCOUNTER GENERATOR
+-- ==========================================
+local function rollEncounterType()
+	local roll = math.random(1, 100)
+	if roll <= 45 then return "Combat"
+	elseif roll <= 70 then return "Objective"
+	elseif roll <= 80 then return "MiniRaid"
+	else return "Bonus" end
+end
+
+local function generateEncounter(player, session)
+	local encounterType = rollEncounterType()
+
+	-- Deep-copy a table (1 level deep is enough for our data)
+	local function copyTable(t)
+		local copy = {}
+		for k, v in pairs(t) do
+			if type(v) == "table" then
+				copy[k] = {}
+				for k2, v2 in pairs(v) do
+					if type(v2) == "table" then
+						copy[k][k2] = {}
+						for k3, v3 in pairs(v2) do copy[k][k2][k3] = v3 end
+					else
+						copy[k][k2] = v2
+					end
+				end
+			else
+				copy[k] = v
+			end
+		end
+		return copy
+	end
+
+	if encounterType == "Combat" then
+		local source = CombatEncounters[math.random(1, #CombatEncounters)]
+		local encounter = copyTable(source)
+		encounter.encounterType = "Combat"
+		return encounter
+
+	elseif encounterType == "Objective" then
+		local source = ObjectiveEncounters[math.random(1, #ObjectiveEncounters)]
+		local encounter = copyTable(source)
+		encounter.encounterType = "Objective"
+		return encounter
+
+	elseif encounterType == "MiniRaid" then
+		return {
+			encounterType = "MiniRaid",
+			title = "Emergency Alert: Mini-Raid!",
+			difficulty = 3, icon = "💀",
+			desc = "Multiple hostiles detected! A coordinated villain attack requires immediate response. Prepare for multi-wave combat!",
+			dialogue = "DISPATCH: \"All available heroes — converge on sector 7! This is not a drill!\"",
+			staminaCost = 15, patrolScore = 25,
+			waves = 3,
+			rewards = {HeroCoins = 150, TrainingXP = 100, Spins = 1},
+		}
+
+	elseif encounterType == "Bonus" then
+		local bonusRoll = math.random(1, #BonusEncounters)
+		if BonusEncounters[bonusRoll].category == "Pachinko" and session.pachinkoUsed then
+			bonusRoll = 2
+		end
+		local encounter = copyTable(BonusEncounters[bonusRoll])
+		encounter.encounterType = "Bonus"
+
+		if encounter.category == "Fan" then
+			encounter.dialogue = "FAN: \"Oh my gosh, you're " .. player.Name .. "! Can I get an autograph?!\""
+		end
+
+		if encounter.category == "ProHero" and encounter.heroes then
+			local hero = encounter.heroes[math.random(1, #encounter.heroes)]
+			encounter.selectedHero = {name = hero.name, buff = hero.buff, reward = hero.reward}
+			encounter.dialogue = hero.name .. ": \"Hey kid. Not bad patrol work. Here's a tip...\""
+			encounter.desc = hero.name .. " appears! They offer: " .. hero.buff
+			encounter.heroes = nil -- remove the full list, only send selected
+		end
+
+		-- Randomize Lucky Find rewards at generation time
+		if encounter.category == "LuckyFind" and encounter.lootTable then
+			for _, loot in ipairs(encounter.lootTable) do
+				if loot.reward and loot.reward.HeroCoins then
+					loot.reward.HeroCoins = math.random(10, 50) -- re-roll
+				end
+				if loot.reward and loot.reward.TrainingXP then
+					loot.reward.TrainingXP = math.random(25, 75)
+				end
+			end
+		end
+
+		return encounter
+	end
+
+	return nil
+end
+
+-- ==========================================
+-- REWARD APPLICATION
+-- ==========================================
+local function applyRewards(player, rewards)
+	local stats = player:FindFirstChild("PlayerStats")
+	if not stats then return end
+
+	for rewardName, amount in pairs(rewards) do
+		if rewardName == "patrolScore" or rewardName == "text" then continue end
+		local val = stats:FindFirstChild(rewardName)
+		if val and val:IsA("IntValue") then
+			val.Value = val.Value + amount
+		end
+	end
+end
+
+local function getPatrolRank(score)
+	if score >= 500 then return "SS-Rank", {HeroCoins=1500, TrainingXP=800, Spins=8}
+	elseif score >= 350 then return "S-Rank", {HeroCoins=1000, TrainingXP=500, Spins=5}
+	elseif score >= 200 then return "A-Rank", {HeroCoins=600, TrainingXP=300, Spins=3}
+	elseif score >= 100 then return "B-Rank", {HeroCoins=300, TrainingXP=150, Spins=1}
+	elseif score >= 50 then return "C-Rank", {HeroCoins=150, TrainingXP=50}
+	else return "D-Rank", {HeroCoins=50} end
+end
+
+-- ==========================================
+-- PATROL EVENT HANDLER
+-- ==========================================
+PatrolEvent.OnServerEvent:Connect(function(player, action, data)
+	local stats = player:FindFirstChild("PlayerStats")
+	if not stats then print("[PatrolServer] No PlayerStats for", player.Name); return end
+	local session = getOrCreateSession(player)
+
+	print("[PatrolServer] Action:", action, "from", player.Name)
+
+	if action == "RequestEncounter" then
+		local stamina = stats:FindFirstChild("PatrolStamina")
+		if not stamina then
+			-- Auto-create if missing (Studio reload / race condition)
+			stamina = Instance.new("IntValue", stats)
+			stamina.Name = "PatrolStamina"
+			stamina.Value = 100
+			print("[PatrolServer] Created missing PatrolStamina for", player.Name)
+		end
+
+		local scoreVal = stats:FindFirstChild("PatrolScore")
+		if not scoreVal then
+			scoreVal = Instance.new("IntValue", stats)
+			scoreVal.Name = "PatrolScore"
+			scoreVal.Value = 0
+		end
+
+		local encounter = generateEncounter(player, session)
+		if not encounter then print("[PatrolServer] Failed to generate encounter!"); return end
+
+		print("[PatrolServer] Generated:", encounter.encounterType, encounter.title, "Cost:", encounter.staminaCost)
+
+		if stamina.Value < (encounter.staminaCost or 5) then
+			PatrolEvent:FireClient(player, "NoStamina", {
+				stamina = stamina.Value,
+				needed = encounter.staminaCost or 5,
+			})
+			return
+		end
+
+		stamina.Value = stamina.Value - (encounter.staminaCost or 5)
+		session.currentEncounter = encounter
+		session.encounterCount = session.encounterCount + 1
+		session.active = true
+
+		-- Send encounter card to client
+		print("[PatrolServer] Sending EncounterCard to", player.Name)
+		PatrolEvent:FireClient(player, "EncounterCard", encounter)
+
+	elseif action == "EngageEncounter" then
+		local encounter = session.currentEncounter
+		if not encounter then print("[PatrolServer] No current encounter!"); return end
+
+		if encounter.encounterType == "Combat" or encounter.encounterType == "MiniRaid" then
+			local hz = stats:FindFirstChild("HighestZoneCleared")
+			local zoneId = tostring(math.max(1, (hz and hz.Value or 0) + 1))
+
+			session.score = session.score + (encounter.patrolScore or 10)
+			applyRewards(player, encounter.rewards or {})
+
+			local scoreVal = stats:FindFirstChild("PatrolScore")
+			if scoreVal then scoreVal.Value = session.score end
+
+			-- Use the patrolEnemyKey from the encounter directly
+			local patrolEnemyKey = encounter.patrolEnemyKey or "Purse_Snatcher"
+
+			-- Mini-Raid: start with wave 1
+			if encounter.encounterType == "MiniRaid" then
+				patrolEnemyKey = "MiniRaid_Wave1"
+				session.miniRaidWave = 1
+			end
+
+			-- 5% RARE BOSS SPAWN (overrides normal encounter)
+			if encounter.encounterType == "Combat" and math.random(1, 100) <= 5 then
+				patrolEnemyKey = "Patrol_Boss"
+				session.score = session.score + 20 -- bonus score for boss
+				if scoreVal then scoreVal.Value = session.score end
+				print("[PatrolServer] RARE BOSS SPAWN for", player.Name)
+			end
+
+			-- Tell the CLIENT to fire StartCombatEvent with patrol data
+			PatrolEvent:FireClient(player, "StartCombat", {
+				zoneId = zoneId,
+				patrolEnemyKey = patrolEnemyKey,
+				encounterTitle = encounter.title,
+			})
+
+		elseif encounter.encounterType == "Objective" or encounter.encounterType == "Bonus" then
+			PatrolEvent:FireClient(player, "StartMinigame", encounter)
+		end
+
+	elseif action == "MinigameResult" then
+		-- data = {result = "perfect"|"success"|"failure", score = number}
+		local encounter = session.currentEncounter
+		if not encounter then return end
+
+		local result = data and data.result or "failure"
+		local rewards = {}
+
+		if encounter.rewards and encounter.rewards[result] then
+			rewards = encounter.rewards[result]
+		elseif encounter.minigameType == "DialogueChoice" and data and data.choiceIndex then
+			local choice = encounter.choices and encounter.choices[data.choiceIndex]
+			if choice then rewards = choice.reward or {} end
+		elseif encounter.minigameType == "Pachinko" and data and data.slotIndex then
+			local slot = encounter.slots and encounter.slots[data.slotIndex]
+			if slot then rewards = slot.reward or {}; session.pachinkoUsed = true end
+		elseif encounter.minigameType == "LootReveal" and data and data.lootIndex then
+			local loot = encounter.lootTable and encounter.lootTable[data.lootIndex]
+			if loot then rewards = loot.reward or {} end
+		elseif encounter.minigameType == "BuffSelect" and encounter.selectedHero then
+			rewards = encounter.selectedHero.reward or {}
+		end
+
+		-- Apply rewards
+		applyRewards(player, rewards)
+		session.score = session.score + (rewards.patrolScore or 0)
+
+		local scoreVal = stats:FindFirstChild("PatrolScore")
+		if scoreVal then scoreVal.Value = session.score end
+
+		-- Send result back to client
+		PatrolEvent:FireClient(player, "MinigameComplete", {
+			rewards = rewards,
+			resultText = rewards.text or (result == "perfect" and "Perfect!" or result == "success" and "Success!" or "Better luck next time."),
+			totalScore = session.score,
+		})
+
+		session.currentEncounter = nil
+
+	elseif action == "SkipEncounter" then
+		session.currentEncounter = nil
+		PatrolEvent:FireClient(player, "EncounterSkipped", {})
+
+	elseif action == "EndPatrol" then
+		-- Calculate final rank (GDD 8.3)
+		local rank, bonusRewards = getPatrolRank(session.score)
+		applyRewards(player, bonusRewards)
+
+		PatrolEvent:FireClient(player, "PatrolComplete", {
+			rank = rank,
+			totalScore = session.score,
+			encounterCount = session.encounterCount,
+			bonusRewards = bonusRewards,
+		})
+
+		-- Reset session
+		PatrolSessions[player] = nil
+
+		-- Reset patrol score
+		local scoreVal = stats:FindFirstChild("PatrolScore")
+		if scoreVal then scoreVal.Value = 0 end
+	end
+end)
+
+print("[PatrolServer] Loaded — Full GDD 8.x patrol system active.")
