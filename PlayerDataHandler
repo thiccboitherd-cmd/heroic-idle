@@ -32,12 +32,34 @@ local function setupPlayerData(player)
 
 	local activeTask = Instance.new("StringValue", stats)
 	activeTask.Name = "ActiveTask"
-	activeTask.Value = "Cleaning Beach"
+	activeTask.Value = "None"
 
-	-- GENETICS (This is what was missing!)
+	-- Genetics
 	local currentQuirk = Instance.new("StringValue", stats); currentQuirk.Name = "CurrentQuirk"; currentQuirk.Value = "None"
 	local currentTrait = Instance.new("StringValue", stats); currentTrait.Name = "CurrentTrait"; currentTrait.Value = "None"
 	local currentStyle = Instance.new("StringValue", stats); currentStyle.Name = "CurrentStyle"; currentStyle.Value = "None"
+
+	-- Zone Progression
+	local highestZone = Instance.new("IntValue", stats); highestZone.Name = "HighestZoneCleared"; highestZone.Value = 0
+
+	-- Patrol
+	local patrolStamina = Instance.new("IntValue", stats); patrolStamina.Name = "PatrolStamina"; patrolStamina.Value = 100
+	local patrolScore = Instance.new("IntValue", stats); patrolScore.Name = "PatrolScore"; patrolScore.Value = 0
+
+	-- Mastery XP
+	local quirkMastery = Instance.new("IntValue", stats); quirkMastery.Name = "QuirkMasteryXP"; quirkMastery.Value = 0
+	local styleMastery = Instance.new("IntValue", stats); styleMastery.Name = "StyleMasteryXP"; styleMastery.Value = 0
+
+	-- Equipped Gear
+	local gearWeapon = Instance.new("StringValue", stats); gearWeapon.Name = "GearWEAPON"; gearWeapon.Value = "None"
+	local gearArmor = Instance.new("StringValue", stats); gearArmor.Name = "GearARMOR"; gearArmor.Value = "None"
+	local gearAssist = Instance.new("StringValue", stats); gearAssist.Name = "GearASSIST"; gearAssist.Value = "None"
+
+	-- Equipped Move Slots
+	local moveSlot1 = Instance.new("StringValue", stats); moveSlot1.Name = "MoveSlot1"; moveSlot1.Value = "Empty"
+	local moveSlot2 = Instance.new("StringValue", stats); moveSlot2.Name = "MoveSlot2"; moveSlot2.Value = "Empty"
+	local moveSlot3 = Instance.new("StringValue", stats); moveSlot3.Name = "MoveSlot3"; moveSlot3.Value = "Empty"
+	local moveSlot4 = Instance.new("StringValue", stats); moveSlot4.Name = "MoveSlot4"; moveSlot4.Value = "Empty"
 
 	-- Load Saved Data
 	local playerUserId = "Player_" .. player.UserId
@@ -57,12 +79,28 @@ local function setupPlayerData(player)
 		intelligence.Value = data.Intelligence or 1
 		quirkFactor.Value = data.QuirkFactor or 1
 
-		activeTask.Value = data.ActiveTask or "Cleaning Beach"
+		activeTask.Value = data.ActiveTask or "None"
 
-		-- Load saved genetics
 		currentQuirk.Value = data.CurrentQuirk or "None"
 		currentTrait.Value = data.CurrentTrait or "None"
 		currentStyle.Value = data.CurrentStyle or "None"
+
+		highestZone.Value = data.HighestZoneCleared or 0
+		patrolStamina.Value = data.PatrolStamina or 100
+		patrolScore.Value = data.PatrolScore or 0
+
+		quirkMastery.Value = data.QuirkMasteryXP or 0
+		styleMastery.Value = data.StyleMasteryXP or 0
+
+		gearWeapon.Value = data.GearWEAPON or "None"
+		gearArmor.Value = data.GearARMOR or "None"
+		gearAssist.Value = data.GearASSIST or "None"
+
+		moveSlot1.Value = data.MoveSlot1 or "Empty"
+		moveSlot2.Value = data.MoveSlot2 or "Empty"
+		moveSlot3.Value = data.MoveSlot3 or "Empty"
+		moveSlot4.Value = data.MoveSlot4 or "Empty"
+
 		print("Data loaded for " .. player.Name)
 	else
 		print("New player! Created default data for " .. player.Name)
@@ -87,7 +125,19 @@ local function savePlayerData(player)
 			ActiveTask = stats.ActiveTask.Value,
 			CurrentQuirk = stats.CurrentQuirk.Value,
 			CurrentTrait = stats.CurrentTrait.Value,
-			CurrentStyle = stats.CurrentStyle.Value
+			CurrentStyle = stats.CurrentStyle.Value,
+			HighestZoneCleared = stats.HighestZoneCleared.Value,
+			PatrolStamina = stats.PatrolStamina.Value,
+			PatrolScore = stats.PatrolScore.Value,
+			QuirkMasteryXP = stats.QuirkMasteryXP.Value,
+			StyleMasteryXP = stats.StyleMasteryXP.Value,
+			GearWEAPON = stats.GearWEAPON.Value,
+			GearARMOR = stats.GearARMOR.Value,
+			GearASSIST = stats.GearASSIST.Value,
+			MoveSlot1 = stats.MoveSlot1.Value,
+			MoveSlot2 = stats.MoveSlot2.Value,
+			MoveSlot3 = stats.MoveSlot3.Value,
+			MoveSlot4 = stats.MoveSlot4.Value,
 		}
 
 		local success, errorMessage = pcall(function()

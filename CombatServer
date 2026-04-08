@@ -515,6 +515,21 @@ local function CheckBossPhaseTransition(entity)
 			-- High-End: Gains flight (+25% dodge)
 			entity.HasFlight = true
 			AppendLog(Colorize(entity.Name .. " took flight! Evasion greatly increased!", "DodgeUp"))
+
+		elseif script == "selfbuff_haste" then
+			-- Stain: Speed surge
+			ApplyStatus(entity, "Haste", 3)
+			AppendLog(Colorize(entity.Name .. " surges with incredible speed!", "Haste"))
+
+		elseif script == "selfbuff_str" then
+			-- Rappa: Permanent strength buff (+25%)
+			entity.Stats.STR = math.floor(entity.Stats.STR * 1.25)
+			AppendLog(Colorize(entity.Name .. "'s strength surged! (+25%)", "Burn"))
+
+		elseif script == "desperation" then
+			-- Muscular/Generic: Early desperation mode
+			entity.DesperationMode = true
+			AppendLog(Colorize(entity.Name .. " is getting desperate! All attacks deal +25% damage!", "Bleed"))
 		end
 
 		-- All bosses: 10% Max HP heal on phase transition
@@ -744,6 +759,11 @@ MoveDatabase = {
 	["unbreakable_smash"] = { Name="Unbreakable Smash", Desc="300% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=5, Execute=function(u,t) return u.Stats.QF * 3.0 end },
 	["gravity_strike"] = { Name="Gravity Strike", Desc="160% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.QF * 1.6 end },
 	["weightless_float"] = { Name="Weightless Float", Desc="Locks physical.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Float",2); return 0 end },
+
+	-- ═══ NAVEL LASER (Uncommon Quirk) ═══
+	["laser_beam"]       = { Name="Laser Beam", Desc="150% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.QF * 1.5 end },
+	["dazzling_shine"]   = { Name="Dazzling Shine", Desc="100% QF. Stun.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(t,"Stun",1); return u.Stats.QF * 1.0 end },
+	["twinkling_laser"]  = { Name="Can't Stop Twinkling", Desc="250% QF AoE. Burn.", Type="Quirk", HasStatus=true, IsAoE=true, BaseCD=5, Execute=function(u,t) ApplyStatus(t,"Burn",3); return u.Stats.QF * 2.5 end },
 
 	-- ═══ RARE QUIRKS ═══
 	["acid_shot"]     = { Name="Acid Shot", Desc="150% QF. Corrodes.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Corrode",99); return u.Stats.QF * 1.5 end },

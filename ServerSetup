@@ -1,5 +1,6 @@
 -- ServerSetup.lua — Place in ServerScriptService as a Script
--- Creates all RemoteEvents, player data, and handles game logic
+-- Creates all RemoteEvents, runtime state, and handles game logic
+-- NOTE: Player data (Instances + DataStore) is handled by PlayerDataHandler.lua
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -14,12 +15,14 @@ local remoteEventNames = {
 	"UpgradeStatEvent",
 	"RollGachaEvent",
 	"ChangeTaskEvent",
+	"TrainEvent",
 	"StartCombatEvent",
 	"EquipMoveEvent",
 	"EquipGearEvent",
 	"PatrolEvent",
 	"ShopPurchaseEvent",
 	"JoinRaidEvent",
+	"RebirthEvent",
 }
 
 local remotes = {}
@@ -61,105 +64,40 @@ local TrainingRewards = {
 }
 
 -- ==========================================
--- 4. PLAYER DATA SETUP
+-- 4. RUNTIME DATA (server-memory only, not persisted)
 -- ==========================================
-local playerData = {} -- [player] = {lastAFKTick, combatState, patrolState, ...}
+local playerData = {} -- [player] = {lastAFKTick, inCombat, combatZone}
 
-local function setupPlayerData(player)
-	-- leaderstats
-	local leaderstats = Instance.new("Folder")
-	leaderstats.Name = "leaderstats"
-	leaderstats.Parent = player
-
-	local rebirths = Instance.new("IntValue", leaderstats)
-	rebirths.Name = "Rebirths"
-	rebirths.Value = 0
-
-	-- PlayerStats folder
-	local stats = Instance.new("Folder")
-	stats.Name = "PlayerStats"
-	stats.Parent = player
-
-	-- Currency
-	local heroCoins = Instance.new("IntValue", stats)
-	heroCoins.Name = "HeroCoins"
-	heroCoins.Value = 500
-
-	local trainingXP = Instance.new("IntValue", stats)
-	trainingXP.Name = "TrainingXP"
-	trainingXP.Value = 100
-
-	local spins = Instance.new("IntValue", stats)
-	spins.Name = "Spins"
-	spins.Value = 5
-
-	-- Core Stats (GDD 3.2)
-	local statNames = {"Strength", "Agility", "Endurance", "Intelligence", "QuirkFactor"}
-	for _, statName in ipairs(statNames) do
-		local val = Instance.new("IntValue", stats)
-		val.Name = statName
-		val.Value = 1
+local function initRuntimeData(player)
+	-- Wait for PlayerDataHandler to create the data
+	local stats = player:WaitForChild("PlayerStats", 15)
+	if not stats then
+		warn("[HeroicIdle] PlayerStats not found for " .. player.Name)
+		return
 	end
 
-	-- Gacha results
-	local currentQuirk = Instance.new("StringValue", stats)
-	currentQuirk.Name = "CurrentQuirk"
-	currentQuirk.Value = "None"
-
-	local currentTrait = Instance.new("StringValue", stats)
-	currentTrait.Name = "CurrentTrait"
-	currentTrait.Value = "None"
-
-	local currentStyle = Instance.new("StringValue", stats)
-	currentStyle.Name = "CurrentStyle"
-	currentStyle.Value = "Quirkless"
-
-	-- Active AFK task
-	local activeTask = Instance.new("StringValue", stats)
-	activeTask.Name = "ActiveTask"
-	activeTask.Value = "None"
-
-	-- Mastery XP trackers
-	local quirkMastery = Instance.new("IntValue", stats)
-	quirkMastery.Name = "QuirkMasteryXP"
-	quirkMastery.Value = 0
-
-	local styleMastery = Instance.new("IntValue", stats)
-	styleMastery.Name = "StyleMasteryXP"
-	styleMastery.Value = 0
-
-	-- Patrol stamina
-	local patrolStamina = Instance.new("IntValue", stats)
-	patrolStamina.Name = "PatrolStamina"
-	patrolStamina.Value = 100
-
-	local patrolScore = Instance.new("IntValue", stats)
-	patrolScore.Name = "PatrolScore"
-	patrolScore.Value = 0
-
-	-- Store player runtime data
 	playerData[player] = {
 		lastAFKTick = os.clock(),
-		equippedMoves = {"Empty", "Empty", "Empty", "Empty"},
-		equippedGear = {WEAPON = "None", ARMOR = "None", ASSIST = "None"},
 		inCombat = false,
 		combatZone = nil,
 	}
 
-	print("[HeroicIdle] Player data created for: " .. player.Name)
+	print("[HeroicIdle] Runtime data initialized for: " .. player.Name)
 end
 
 local function cleanupPlayerData(player)
 	playerData[player] = nil
 end
 
-Players.PlayerAdded:Connect(setupPlayerData)
+Players.PlayerAdded:Connect(initRuntimeData)
 Players.PlayerRemoving:Connect(cleanupPlayerData)
 
 -- Setup for any players already in the server (Studio testing)
 for _, player in ipairs(Players:GetPlayers()) do
-	if not player:FindFirstChild("PlayerStats") then
-		setupPlayerData(player)
+	if not playerData[player] then
+		task.spawn(function()
+			initRuntimeData(player)
+		end)
 	end
 end
 
@@ -185,23 +123,22 @@ task.spawn(function()
 				if rv then rebirthCount = rv.Value end
 			end
 
-			local xpMultiplier = 1 + (rebirthCount * 0.5) -- GDD 10.2.4: 1.5x per rebirth
+			local rebirthMultiplier = 1 + (rebirthCount * 0.5) -- GDD 10.2.4: 1.5x per rebirth
 
-			-- Side Hustle → Hero Coins
+			-- Side Hustle -> Hero Coins (with rebirth multiplier)
 			if HustleRewards[taskName] then
 				local coins = stats:FindFirstChild("HeroCoins")
 				if coins then
-					-- Reward is per minute, tick is every 6 seconds (10 ticks/min)
-					local reward = math.floor(HustleRewards[taskName] / 10)
+					local reward = math.floor((HustleRewards[taskName] / 10) * rebirthMultiplier)
 					coins.Value = coins.Value + reward
 				end
 			end
 
-			-- Training Area → Training XP
+			-- Training Area -> Training XP (with rebirth multiplier)
 			if TrainingRewards[taskName] then
 				local xp = stats:FindFirstChild("TrainingXP")
 				if xp then
-					local reward = math.floor((TrainingRewards[taskName] / 10) * xpMultiplier)
+					local reward = math.floor((TrainingRewards[taskName] / 10) * rebirthMultiplier)
 					xp.Value = xp.Value + reward
 				end
 			end
@@ -212,7 +149,6 @@ end)
 -- ==========================================
 -- 6. REMOTE EVENT HANDLERS
 -- ==========================================
-
 
 -- NOTE: UpgradeStatEvent and RollGachaEvent are handled by GachaServer.lua.
 
@@ -242,7 +178,25 @@ end)
 
 -- NOTE: PatrolEvent is handled by PatrolServer.lua. No duplicate handlers here.
 
--- SHOP PURCHASE
+-- SHOP PURCHASE (equips gear on purchase)
+local shopPrices = {
+	["Steel Gauntlets"] = 850,
+	["Impact Absorber"] = 600,
+	["Cooling Vents"] = 1200,
+	["Homing Lens"] = 3500,
+	["Titanium Blade"] = 200,
+	["Padded Suit Mk.2"] = 500,
+}
+
+local shopGearTypes = {
+	["Steel Gauntlets"] = "WEAPON",
+	["Impact Absorber"] = "ARMOR",
+	["Cooling Vents"] = "ASSIST",
+	["Homing Lens"] = "ASSIST",
+	["Titanium Blade"] = "WEAPON",
+	["Padded Suit Mk.2"] = "ARMOR",
+}
+
 remotes.ShopPurchaseEvent.OnServerEvent:Connect(function(player, itemName)
 	local stats = player:FindFirstChild("PlayerStats")
 	if not stats then return end
@@ -250,29 +204,72 @@ remotes.ShopPurchaseEvent.OnServerEvent:Connect(function(player, itemName)
 	local heroCoins = stats:FindFirstChild("HeroCoins")
 	if not heroCoins then return end
 
-	-- Shop item prices (simplified)
-	local shopPrices = {
-		["Steel Gauntlets"] = 850,
-		["Impact Absorber"] = 600,
-		["Cooling Vents"] = 1200,
-		["Homing Lens"] = 3500,
-		["Titanium Blade"] = 200,
-		["Padded Suit Mk.2"] = 500,
-	}
-
 	local price = shopPrices[itemName]
 	if price and heroCoins.Value >= price then
 		heroCoins.Value = heroCoins.Value - price
-		-- In full implementation: add to player's gear inventory
-		print("[HeroicIdle] " .. player.Name .. " purchased: " .. itemName)
+
+		-- Equip the gear into the appropriate slot
+		local gearType = shopGearTypes[itemName]
+		if gearType then
+			local gearVal = stats:FindFirstChild("Gear" .. gearType)
+			if gearVal then
+				gearVal.Value = itemName
+			end
+		end
+
+		print("[HeroicIdle] " .. player.Name .. " purchased and equipped: " .. itemName)
 	end
 end)
 
--- JOIN RAID
+-- JOIN RAID (follows Patrol pattern: server tells client to start combat)
 remotes.JoinRaidEvent.OnServerEvent:Connect(function(player)
-	-- In full implementation: add player to raid instance
-	-- For now, start a solo raid-style combat
-	print("[HeroicIdle] " .. player.Name .. " joined raid")
+	local pStats = player:FindFirstChild("PlayerStats")
+	if not pStats then return end
+
+	local hz = pStats:FindFirstChild("HighestZoneCleared")
+	local raidZone = tostring(math.min(5, math.max(1, (hz and hz.Value or 0) + 1)))
+
+	-- Tell the client to initiate combat with the raid zone
+	remotes.JoinRaidEvent:FireClient(player, "StartRaid", raidZone)
+end)
+
+-- REBIRTH (GDD 10.2: Reset stats, keep genetics/gear/spins, increment rebirths)
+remotes.RebirthEvent.OnServerEvent:Connect(function(player)
+	local stats = player:FindFirstChild("PlayerStats")
+	local leaderstats = player:FindFirstChild("leaderstats")
+	if not stats or not leaderstats then return end
+
+	-- Must have cleared at least Zone 1 to rebirth
+	local hz = stats:FindFirstChild("HighestZoneCleared")
+	if not hz or hz.Value < 1 then return end
+
+	-- Increment Rebirths
+	leaderstats.Rebirths.Value += 1
+
+	-- Reset stats to 1
+	for _, statName in ipairs({"Strength", "Agility", "Endurance", "Intelligence", "QuirkFactor"}) do
+		local s = stats:FindFirstChild(statName)
+		if s then s.Value = 1 end
+	end
+
+	-- Reduce coins by 50%
+	local coins = stats:FindFirstChild("HeroCoins")
+	if coins then coins.Value = math.floor(coins.Value * 0.5) end
+
+	-- Reset Training XP
+	local xp = stats:FindFirstChild("TrainingXP")
+	if xp then xp.Value = 0 end
+
+	-- Reset zone progression
+	hz.Value = 0
+
+	-- Reset active task
+	local at = stats:FindFirstChild("ActiveTask")
+	if at then at.Value = "None" end
+
+	-- KEEP: Spins, CurrentQuirk, CurrentTrait, CurrentStyle, Gear, Moves
+
+	print("[HeroicIdle] " .. player.Name .. " rebirthed! Total: " .. leaderstats.Rebirths.Value)
 end)
 
 -- ==========================================

@@ -964,6 +964,10 @@ local function BuildRebirthModal(screenGui: ScreenGui)
 	confirmBtn.MouseButton1Click:Connect(function()
 		closeModal()
 		showToast("🔄 REBIRTH INITIATED!", PALETTE.BrightYellow, 3)
+		local RebirthEvent = ReplicatedStorage:FindFirstChild("RebirthEvent")
+		if RebirthEvent then
+			RebirthEvent:FireServer()
+		end
 	end)
 
 	return function()
@@ -3782,6 +3786,13 @@ local function BuildRaidsPage()
 	joinBtn.MouseButton1Click:Connect(function()
 		JoinRaidEvent:FireServer()
 		showToast("⚔ Joining raid...", PALETTE.HeroRed)
+	end)
+
+	-- Handle raid start response from server
+	JoinRaidEvent.OnClientEvent:Connect(function(action, raidZone)
+		if action == "StartRaid" then
+			StartCombatEvent:FireServer(raidZone)
+		end
 	end)
 
 	-- DPS Leaderboard (GDD: top 10 contributors)

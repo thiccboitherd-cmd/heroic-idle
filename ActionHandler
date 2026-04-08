@@ -6,8 +6,8 @@ local trainCooldowns = {}
 
 -- 1. Handle Active Training (Clicking)
 TrainEvent.OnServerEvent:Connect(function(player)
-	if trainCooldowns[player.UserId] and os.clock() - trainCooldowns[player.UserId] < 0.1 then 
-		return 
+	if trainCooldowns[player.UserId] and os.clock() - trainCooldowns[player.UserId] < 0.1 then
+		return
 	end
 	trainCooldowns[player.UserId] = os.clock()
 
@@ -17,8 +17,14 @@ TrainEvent.OnServerEvent:Connect(function(player)
 		local multiplier = 1 + (player.leaderstats.Rebirths.Value * 0.5)
 		local gain = math.floor(1 * multiplier)
 		trainingXP.Value += gain
-		local gain = math.max(1)
-		spins.Value += gain
+
+		-- 5% chance to earn a Spin from active training
+		if math.random(1, 100) <= 5 then
+			local spins = stats:FindFirstChild("Spins")
+			if spins then
+				spins.Value += 1
+			end
+		end
 	end
 end)
 
