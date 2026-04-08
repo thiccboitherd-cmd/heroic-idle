@@ -1,0 +1,296 @@
+-- ServerSetup.lua — Place in ServerScriptService as a Script
+-- Creates all RemoteEvents, player data, and handles game logic
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+-- ==========================================
+-- 1. CREATE ALL REMOTE EVENTS
+-- ==========================================
+local remoteEventNames = {
+	"CombatUpdateEvent",
+	"CombatActionEvent",
+	"UpgradeStatEvent",
+	"RollGachaEvent",
+	"ChangeTaskEvent",
+	"StartCombatEvent",
+	"EquipMoveEvent",
+	"EquipGearEvent",
+	"PatrolEvent",
+	"ShopPurchaseEvent",
+	"JoinRaidEvent",
+}
+
+local remotes = {}
+for _, name in ipairs(remoteEventNames) do
+	local existing = ReplicatedStorage:FindFirstChild(name)
+	if existing then
+		remotes[name] = existing
+	else
+		local re = Instance.new("RemoteEvent")
+		re.Name = name
+		re.Parent = ReplicatedStorage
+		remotes[name] = re
+	end
+end
+
+
+-- NOTE: Gacha pools, rollRarity, rollGachaItem, UpgradeStatEvent handler,
+-- and RollGachaEvent handler are ALL in GachaServer.lua. No duplicates here.
+
+-- ==========================================
+-- 3. AFK REWARD RATES (Coins/XP per tick)
+-- ==========================================
+local AFK_TICK_INTERVAL = 6 -- seconds between rewards
+
+local HustleRewards = {
+	["Cleaning Beach"] = 10,
+	["Campus Patrol"]  = 50,
+	["Agency Desk"]    = 200,
+	["TV Commercial"]  = 800,
+	["Night Patrol"]   = 2500,
+}
+
+local TrainingRewards = {
+	["Community Gym"]    = 15,
+	["U.A. Gym Gamma"]   = 75,
+	["U.S.J. Fire Zone"] = 300,
+	["Sports Fest Ring"] = 1200,
+	["Gran Torino's Apt"] = 4000,
+}
+
+-- ==========================================
+-- 4. PLAYER DATA SETUP
+-- ==========================================
+local playerData = {} -- [player] = {lastAFKTick, combatState, patrolState, ...}
+
+local function setupPlayerData(player)
+	-- leaderstats
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
+	local rebirths = Instance.new("IntValue", leaderstats)
+	rebirths.Name = "Rebirths"
+	rebirths.Value = 0
+
+	-- PlayerStats folder
+	local stats = Instance.new("Folder")
+	stats.Name = "PlayerStats"
+	stats.Parent = player
+
+	-- Currency
+	local heroCoins = Instance.new("IntValue", stats)
+	heroCoins.Name = "HeroCoins"
+	heroCoins.Value = 500
+
+	local trainingXP = Instance.new("IntValue", stats)
+	trainingXP.Name = "TrainingXP"
+	trainingXP.Value = 100
+
+	local spins = Instance.new("IntValue", stats)
+	spins.Name = "Spins"
+	spins.Value = 5
+
+	-- Core Stats (GDD 3.2)
+	local statNames = {"Strength", "Agility", "Endurance", "Intelligence", "QuirkFactor"}
+	for _, statName in ipairs(statNames) do
+		local val = Instance.new("IntValue", stats)
+		val.Name = statName
+		val.Value = 1
+	end
+
+	-- Gacha results
+	local currentQuirk = Instance.new("StringValue", stats)
+	currentQuirk.Name = "CurrentQuirk"
+	currentQuirk.Value = "None"
+
+	local currentTrait = Instance.new("StringValue", stats)
+	currentTrait.Name = "CurrentTrait"
+	currentTrait.Value = "None"
+
+	local currentStyle = Instance.new("StringValue", stats)
+	currentStyle.Name = "CurrentStyle"
+	currentStyle.Value = "Quirkless"
+
+	-- Active AFK task
+	local activeTask = Instance.new("StringValue", stats)
+	activeTask.Name = "ActiveTask"
+	activeTask.Value = "None"
+
+	-- Mastery XP trackers
+	local quirkMastery = Instance.new("IntValue", stats)
+	quirkMastery.Name = "QuirkMasteryXP"
+	quirkMastery.Value = 0
+
+	local styleMastery = Instance.new("IntValue", stats)
+	styleMastery.Name = "StyleMasteryXP"
+	styleMastery.Value = 0
+
+	-- Patrol stamina
+	local patrolStamina = Instance.new("IntValue", stats)
+	patrolStamina.Name = "PatrolStamina"
+	patrolStamina.Value = 100
+
+	local patrolScore = Instance.new("IntValue", stats)
+	patrolScore.Name = "PatrolScore"
+	patrolScore.Value = 0
+
+	-- Store player runtime data
+	playerData[player] = {
+		lastAFKTick = os.clock(),
+		equippedMoves = {"Empty", "Empty", "Empty", "Empty"},
+		equippedGear = {WEAPON = "None", ARMOR = "None", ASSIST = "None"},
+		inCombat = false,
+		combatZone = nil,
+	}
+
+	print("[HeroicIdle] Player data created for: " .. player.Name)
+end
+
+local function cleanupPlayerData(player)
+	playerData[player] = nil
+end
+
+Players.PlayerAdded:Connect(setupPlayerData)
+Players.PlayerRemoving:Connect(cleanupPlayerData)
+
+-- Setup for any players already in the server (Studio testing)
+for _, player in ipairs(Players:GetPlayers()) do
+	if not player:FindFirstChild("PlayerStats") then
+		setupPlayerData(player)
+	end
+end
+
+-- ==========================================
+-- 5. AFK TICK SYSTEM (Dual-AFK enforced)
+-- ==========================================
+task.spawn(function()
+	while true do
+		task.wait(AFK_TICK_INTERVAL)
+
+		for _, player in ipairs(Players:GetPlayers()) do
+			local stats = player:FindFirstChild("PlayerStats")
+			if not stats then continue end
+
+			local activeTaskVal = stats:FindFirstChild("ActiveTask")
+			if not activeTaskVal or activeTaskVal.Value == "None" then continue end
+
+			local taskName = activeTaskVal.Value
+			local rebirthCount = 0
+			local rb = player:FindFirstChild("leaderstats")
+			if rb then
+				local rv = rb:FindFirstChild("Rebirths")
+				if rv then rebirthCount = rv.Value end
+			end
+
+			local xpMultiplier = 1 + (rebirthCount * 0.5) -- GDD 10.2.4: 1.5x per rebirth
+
+			-- Side Hustle → Hero Coins
+			if HustleRewards[taskName] then
+				local coins = stats:FindFirstChild("HeroCoins")
+				if coins then
+					-- Reward is per minute, tick is every 6 seconds (10 ticks/min)
+					local reward = math.floor(HustleRewards[taskName] / 10)
+					coins.Value = coins.Value + reward
+				end
+			end
+
+			-- Training Area → Training XP
+			if TrainingRewards[taskName] then
+				local xp = stats:FindFirstChild("TrainingXP")
+				if xp then
+					local reward = math.floor((TrainingRewards[taskName] / 10) * xpMultiplier)
+					xp.Value = xp.Value + reward
+				end
+			end
+		end
+	end
+end)
+
+-- ==========================================
+-- 6. REMOTE EVENT HANDLERS
+-- ==========================================
+
+
+-- NOTE: UpgradeStatEvent and RollGachaEvent are handled by GachaServer.lua.
+
+-- CHANGE AFK TASK (Dual-AFK enforcement: one at a time)
+remotes.ChangeTaskEvent.OnServerEvent:Connect(function(player, taskName)
+	local stats = player:FindFirstChild("PlayerStats")
+	if not stats then return end
+
+	local activeTaskVal = stats:FindFirstChild("ActiveTask")
+	if not activeTaskVal then return end
+
+	-- Validate task name
+	if taskName == "None" then
+		activeTaskVal.Value = "None"
+		return
+	end
+
+	if not HustleRewards[taskName] and not TrainingRewards[taskName] then
+		return -- invalid task
+	end
+
+	activeTaskVal.Value = taskName
+end)
+
+-- NOTE: EquipMoveEvent, EquipGearEvent, StartCombatEvent, and CombatActionEvent
+-- are ALL handled by CombatServer.lua. Do NOT add duplicate handlers here.
+
+-- NOTE: PatrolEvent is handled by PatrolServer.lua. No duplicate handlers here.
+
+-- SHOP PURCHASE
+remotes.ShopPurchaseEvent.OnServerEvent:Connect(function(player, itemName)
+	local stats = player:FindFirstChild("PlayerStats")
+	if not stats then return end
+
+	local heroCoins = stats:FindFirstChild("HeroCoins")
+	if not heroCoins then return end
+
+	-- Shop item prices (simplified)
+	local shopPrices = {
+		["Steel Gauntlets"] = 850,
+		["Impact Absorber"] = 600,
+		["Cooling Vents"] = 1200,
+		["Homing Lens"] = 3500,
+		["Titanium Blade"] = 200,
+		["Padded Suit Mk.2"] = 500,
+	}
+
+	local price = shopPrices[itemName]
+	if price and heroCoins.Value >= price then
+		heroCoins.Value = heroCoins.Value - price
+		-- In full implementation: add to player's gear inventory
+		print("[HeroicIdle] " .. player.Name .. " purchased: " .. itemName)
+	end
+end)
+
+-- JOIN RAID
+remotes.JoinRaidEvent.OnServerEvent:Connect(function(player)
+	-- In full implementation: add player to raid instance
+	-- For now, start a solo raid-style combat
+	print("[HeroicIdle] " .. player.Name .. " joined raid")
+end)
+
+-- ==========================================
+-- 7. PATROL STAMINA REGENERATION (GDD 8.2: 1 per 3 min)
+-- ==========================================
+task.spawn(function()
+	while true do
+		task.wait(180) -- 3 minutes
+		for _, player in ipairs(Players:GetPlayers()) do
+			local stats = player:FindFirstChild("PlayerStats")
+			if stats then
+				local stamina = stats:FindFirstChild("PatrolStamina")
+				if stamina and stamina.Value < 100 then
+					stamina.Value = math.min(100, stamina.Value + 1)
+				end
+			end
+		end
+	end
+end)
+
+print("[HeroicIdle] Server setup complete. All RemoteEvents and systems initialized.")
