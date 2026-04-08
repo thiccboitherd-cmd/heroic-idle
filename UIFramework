@@ -1,40 +1,248 @@
--- Theme.lua — Place in ReplicatedStorage as a ModuleScript named "Theme"
--- Provides centralized color/style constants for the UI
+-- UIFramework.lua — Place in ReplicatedStorage as a ModuleScript named "UIFramework"
+-- Lightweight UI component factory used by the client script
 
-local Theme = {}
+local TweenService = game:GetService("TweenService")
+local UIFramework = {}
 
-Theme.Colors = {
-	-- Backgrounds
-	Background       = Color3.fromRGB(14, 18, 30),
-	Panel            = Color3.fromRGB(22, 28, 46),
-	PanelHighlight   = Color3.fromRGB(30, 38, 60),
+-- ==========================================
+-- UIFrame: A styled panel with corner radius + stroke
+-- ==========================================
+local UIFrame = {}
+UIFrame.__index = UIFrame
 
-	-- Text
-	Text             = Color3.fromRGB(200, 205, 220),
-	PrimaryText      = Color3.fromRGB(235, 235, 245),
-	TextMuted        = Color3.fromRGB(130, 140, 165),
-	LockedText       = Color3.fromRGB(70, 75, 90),
-	ObjectiveText    = Color3.fromRGB(80, 220, 100),
+function UIFrame.new(name, bgColor, parent)
+	local self = setmetatable({}, UIFrame)
 
-	-- Accents
-	Accent           = Color3.fromRGB(115, 195, 235),
-	AccentDark       = Color3.fromRGB(0, 102, 204),
-	Gold             = Color3.fromRGB(255, 215, 0),
-	Red              = Color3.fromRGB(220, 50, 50),
-	Green            = Color3.fromRGB(50, 220, 80),
-	Purple           = Color3.fromRGB(120, 40, 180),
-}
+	local frame = Instance.new("Frame")
+	frame.Name = name or "UIFrame"
+	frame.BackgroundColor3 = bgColor or Color3.fromRGB(22, 28, 46)
+	frame.BorderSizePixel = 0
+	frame.Size = UDim2.new(1, 0, 1, 0)
 
-Theme.Fonts = {
-	Header = Enum.Font.GothamBlack,
-	Bold   = Enum.Font.GothamBold,
-	Normal = Enum.Font.Gotham,
-}
+	local corner = Instance.new("UICorner", frame)
+	corner.CornerRadius = UDim.new(0, 8)
 
-Theme.Sizes = {
-	CornerRadius = UDim.new(0, 8),
-	StrokeThickness = 1,
-	Padding = UDim.new(0, 10),
-}
+	if parent then
+		frame.Parent = parent
+		if typeof(parent) == "Instance" and parent:IsA("GuiObject") then
+			-- auto parent
+		elseif typeof(parent) == "table" and parent.Gui then
+			frame.Parent = parent.Gui
+		end
+	end
 
-return Theme
+	self.Gui = frame
+	return self
+end
+
+UIFramework.UIFrame = UIFrame
+
+-- ==========================================
+-- UILabel: A text label with sensible defaults
+-- ==========================================
+local UILabel = {}
+UILabel.__index = UILabel
+
+function UILabel.new(name, parent)
+	local self = setmetatable({}, UILabel)
+
+	local label = Instance.new("TextLabel")
+	label.Name = name or "UILabel"
+	label.BackgroundTransparency = 1
+	label.TextColor3 = Color3.fromRGB(200, 205, 220)
+	label.Font = Enum.Font.Gotham
+	label.TextSize = 14
+	label.TextScaled = false
+	label.Size = UDim2.new(1, 0, 0, 20)
+	label.TextXAlignment = Enum.TextXAlignment.Center
+	label.TextYAlignment = Enum.TextYAlignment.Center
+	label.Text = ""
+
+	if parent then
+		if typeof(parent) == "Instance" then
+			label.Parent = parent
+		elseif typeof(parent) == "table" and parent.Gui then
+			label.Parent = parent.Gui
+		end
+	end
+
+	self.Gui = label
+	return self
+end
+
+function UILabel:SetText(text)
+	self.Gui.Text = text or ""
+end
+
+UIFramework.UILabel = UILabel
+
+-- ==========================================
+-- UIButton: A clickable text button with styling
+-- ==========================================
+local UIButton = {}
+UIButton.__index = UIButton
+
+function UIButton.new(name, text, bgColor, parent)
+	local self = setmetatable({}, UIButton)
+
+	local button = Instance.new("TextButton")
+	button.Name = name or "UIButton"
+	button.Text = text or ""
+	button.BackgroundColor3 = bgColor or Color3.fromRGB(30, 38, 60)
+	button.BorderSizePixel = 0
+	button.TextColor3 = Color3.fromRGB(200, 205, 220)
+	button.Font = Enum.Font.GothamBold
+	button.TextSize = 14
+	button.AutoButtonColor = false
+	button.Size = UDim2.new(1, 0, 0, 36)
+
+	local corner = Instance.new("UICorner", button)
+	corner.CornerRadius = UDim.new(0, 8)
+
+	if parent then
+		if typeof(parent) == "Instance" then
+			button.Parent = parent
+		elseif typeof(parent) == "table" and parent.Gui then
+			button.Parent = parent.Gui
+		end
+	end
+
+	self.Gui = button
+	self._connections = {}
+	return self
+end
+
+function UIButton:SetText(text)
+	self.Gui.Text = text or ""
+end
+
+function UIButton:OnClick(callback)
+	local conn = self.Gui.MouseButton1Click:Connect(callback)
+	table.insert(self._connections, conn)
+	return conn
+end
+
+UIFramework.UIButton = UIButton
+
+-- ==========================================
+-- UIImage: An ImageLabel wrapper
+-- ==========================================
+local UIImage = {}
+UIImage.__index = UIImage
+
+function UIImage.new(name, parent)
+	local self = setmetatable({}, UIImage)
+
+	local img = Instance.new("ImageLabel")
+	img.Name = name or "UIImage"
+	img.BackgroundTransparency = 1
+	img.ScaleType = Enum.ScaleType.Fit
+	img.Size = UDim2.new(1, 0, 1, 0)
+
+	if parent then
+		if typeof(parent) == "Instance" then
+			img.Parent = parent
+		elseif typeof(parent) == "table" and parent.Gui then
+			img.Parent = parent.Gui
+		end
+	end
+
+	self.Gui = img
+	return self
+end
+
+UIFramework.UIImage = UIImage
+
+-- ==========================================
+-- UIScrollFrame: A scrolling frame with styled scrollbar
+-- ==========================================
+local UIScrollFrame = {}
+UIScrollFrame.__index = UIScrollFrame
+
+function UIScrollFrame.new(name, bgColor, parent)
+	local self = setmetatable({}, UIScrollFrame)
+
+	local scroll = Instance.new("ScrollingFrame")
+	scroll.Name = name or "UIScrollFrame"
+	scroll.BackgroundColor3 = bgColor or Color3.fromRGB(22, 28, 46)
+	scroll.BorderSizePixel = 0
+	scroll.ScrollBarThickness = 4
+	scroll.ScrollBarImageColor3 = Color3.fromRGB(80, 90, 120)
+	scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	scroll.Size = UDim2.new(1, 0, 1, 0)
+	scroll.ClipsDescendants = true
+
+	local corner = Instance.new("UICorner", scroll)
+	corner.CornerRadius = UDim.new(0, 8)
+
+	if parent then
+		if typeof(parent) == "Instance" then
+			scroll.Parent = parent
+		elseif typeof(parent) == "table" and parent.Gui then
+			scroll.Parent = parent.Gui
+		end
+	end
+
+	self.Gui = scroll
+	return self
+end
+
+UIFramework.UIScrollFrame = UIScrollFrame
+
+-- ==========================================
+-- UIProgressBar: A horizontal fill bar
+-- ==========================================
+local UIProgressBar = {}
+UIProgressBar.__index = UIProgressBar
+
+function UIProgressBar.new(name, parent)
+	local self = setmetatable({}, UIProgressBar)
+
+	local bg = Instance.new("Frame")
+	bg.Name = name or "UIProgressBar"
+	bg.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+	bg.BorderSizePixel = 0
+	bg.Size = UDim2.new(1, 0, 0, 10)
+
+	local bgCorner = Instance.new("UICorner", bg)
+	bgCorner.CornerRadius = UDim.new(1, 0)
+
+	local fill = Instance.new("Frame", bg)
+	fill.Name = "Fill"
+	fill.BackgroundColor3 = Color3.fromRGB(115, 195, 235)
+	fill.BorderSizePixel = 0
+	fill.Size = UDim2.new(0, 0, 1, 0)
+
+	local fillCorner = Instance.new("UICorner", fill)
+	fillCorner.CornerRadius = UDim.new(1, 0)
+
+	if parent then
+		if typeof(parent) == "Instance" then
+			bg.Parent = parent
+		elseif typeof(parent) == "table" and parent.Gui then
+			bg.Parent = parent.Gui
+		end
+	end
+
+	self.Gui = bg
+	self.Fill = fill
+	self._progress = 0
+	return self
+end
+
+function UIProgressBar:SetProgress(pct)
+	pct = math.clamp(pct or 0, 0, 1)
+	self._progress = pct
+	TweenService:Create(self.Fill, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		Size = UDim2.new(pct, 0, 1, 0)
+	}):Play()
+end
+
+function UIProgressBar:GetProgress()
+	return self._progress
+end
+
+UIFramework.UIProgressBar = UIProgressBar
+
+return UIFramework
