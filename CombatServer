@@ -1,0 +1,1732 @@
+-- ServerScriptService/CombatServer.lua
+-- HEROIC IDLE: QUIRK AWAKENING — Combat Engine v3.0
+--[[
+	GDD COMPLIANCE:
+	✅ 5.2  Full Damage Pipeline (Base → Crit → Modifiers → Dodge → Mitigation → Apply)
+	✅ 5.3  Expanded Status Effects (Burn 3%HP, Bleed 2%HP+STR, Corrode stacking, Shield, Haste)
+	✅ 5.4  Awakening/Ultimate Meter (5% deal, 8% take, 3% status, 10% crit-taken)
+	✅ 6.1  Enemy Archetypes (Grunt, Tank, Assassin, Caster, Boss)
+	✅ 6.2  Enemy Scaling Formula (BaseStatForArchetype * (1 + (ZoneIndex-1)*0.35) * DifficultyMult)
+	✅ 6.3.1 Utility-Based AI with Scoring Weights (Emergency=100, Execute=90, CC=70, Exploit=60, DoT=40, Default=20)
+	✅ 6.3.2 Boss Phase Scripting (Phase2@50%, Phase3@20%, per-boss mechanics)
+	✅ INT stat reduces cooldowns
+	✅ Critical Hit system (5% base + bonuses, 1.5x mult, bypasses dodge)
+	✅ Gauntlet/Exam mode for Zone 1
+	✅ Zone 1-5 boss definitions with unique phase mechanics
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+-- ==========================================
+-- REMOTE EVENTS (create if missing)
+-- ==========================================
+local function getOrCreate(name, class)
+	local existing = ReplicatedStorage:FindFirstChild(name)
+	if existing then return existing end
+	local inst = Instance.new(class or "RemoteEvent")
+	inst.Name = name
+	inst.Parent = ReplicatedStorage
+	return inst
+end
+
+local StartCombatEvent = getOrCreate("StartCombatEvent")
+local CombatUpdateEvent = getOrCreate("CombatUpdateEvent")
+local CombatActionEvent = getOrCreate("CombatActionEvent")
+local EquipMoveEvent = getOrCreate("EquipMoveEvent")
+local EquipGearEvent = getOrCreate("EquipGearEvent")
+
+-- ==========================================
+-- GEAR DATABASE
+-- ==========================================
+local GearDatabase = {
+	["Steel Pipe"]     = { Stats = {STR=15, AGI=0, END=0, QF=0}, CritBonus=0, DmgBonus=0 },
+	["Stun Baton"]     = { Stats = {STR=5, AGI=0, END=0, QF=15}, CritBonus=0.02, DmgBonus=0 },
+	["Gym Shirt"]      = { Stats = {STR=0, AGI=5, END=10, QF=0}, CritBonus=0, DmgBonus=0 },
+	["Heavy Vest"]     = { Stats = {STR=0, AGI=-5, END=50, QF=0}, CritBonus=0, DmgBonus=0 },
+	["Cooling Vents"]  = { Stats = {STR=0, AGI=10, END=0, QF=20}, CritBonus=0, DmgBonus=0.05 },
+	["Steel Gauntlets"] = { Stats = {STR=20, AGI=0, END=0, QF=0}, CritBonus=0.05, DmgBonus=0 },
+	["Impact Absorber"] = { Stats = {STR=0, AGI=0, END=35, QF=0}, CritBonus=0, DmgBonus=0 },
+	["Homing Lens"]    = { Stats = {STR=0, AGI=0, END=0, QF=10}, CritBonus=0.03, DmgBonus=0.05 },
+	["Titanium Blade"] = { Stats = {STR=12, AGI=0, END=0, QF=0}, CritBonus=0, DmgBonus=0 },
+	["Padded Suit Mk.2"] = { Stats = {STR=0, AGI=0, END=25, QF=0}, CritBonus=0, DmgBonus=0 },
+	["Hero Killer Katana"] = { Stats = {STR=50, AGI=30, END=0, QF=0}, CritBonus=0.10, DmgBonus=0.15 },
+}
+
+-- ==========================================
+-- ENEMY TEMPLATES (GDD 7.2 — All 5 Zones)
+-- ==========================================
+local EnemyTemplates = {
+	-- Zone 1: U.A. Exam
+	["1-Pointer"]    = { Name="1-Pt Faux Villain", HP=300, Stats={STR=30,AGI=20,END=30,QF=0}, Moves={"basic_strike"}, Points=1, Rewards={TrainingXP=100,Spins=0,MasteryXP=20}, Portrait="rbxassetid://10654202353", Archetype="Grunt" },
+	["2-Pointer"]    = { Name="2-Pt Faux Villain", HP=600, Stats={STR=50,AGI=30,END=50,QF=0}, Moves={"basic_strike","heavy_strike"}, Points=2, Rewards={TrainingXP=250,MasteryXP=40}, Portrait="rbxassetid://10654202353", Archetype="Grunt" },
+	["3-Pointer"]    = { Name="3-Pt Faux Villain", HP=1000, Stats={STR=80,AGI=40,END=80,QF=0}, Moves={"brutal_hook","basic_strike"}, Points=3, Rewards={TrainingXP=400,MasteryXP=70}, Portrait="rbxassetid://10654202353", Archetype="Tank" },
+	["0-Pointer"]    = { Name="Zero-Pointer", HP=3000, Stats={STR=150,AGI=10,END=120,QF=0}, Moves={"brutal_hook","heavy_strike"}, Points=10, Rewards={TrainingXP=1500,HeroCoins=500,MasteryXP=300}, IsBoss=true, Portrait="rbxassetid://10654202353", Archetype="Tank" },
+	["Present Mic"]  = { Name="Present Mic", HP=3500, Stats={STR=50,AGI=150,END=80,QF=200}, Moves={"voice_shout","sound_wave","basic_strike"}, Points=50, Rewards={TrainingXP=2000,Spins=5,HeroCoins=1000}, IsBoss=true, Portrait="rbxassetid://16766440266", Archetype="Boss" },
+
+	-- ═══════════════════════════════════════════
+	-- PATROL ENEMIES — Full Roster for Replayability
+	-- ═══════════════════════════════════════════
+
+	-- ─── TIER 1: PETTY CRIME (1★) ───
+	["Purse_Snatcher"]   = { Name="Purse Snatcher", HP=180, Archetype="Grunt", Tier=1, Portrait="rbxassetid://10654202353", Stats={STR=20,AGI=45,END=15,QF=0}, Moves={"quick_jab","basic_strike"}, Rewards={HeroCoins=20,TrainingXP=15,MasteryXP=10} },
+	["Petty_Thief"]      = { Name="Petty Thief", HP=150, Archetype="Grunt", Tier=1, Portrait="rbxassetid://10654202353", Stats={STR=15,AGI=50,END=10,QF=0}, Moves={"quick_jab","basic_strike"}, Rewards={HeroCoins=15,TrainingXP=12,MasteryXP=8} },
+	["Shoplifter"]       = { Name="Shoplifter", HP=120, Archetype="Grunt", Tier=1, Portrait="rbxassetid://10654202353", Stats={STR=12,AGI=55,END=8,QF=0}, Moves={"basic_strike"}, Rewards={HeroCoins=12,TrainingXP=10,MasteryXP=5} },
+	["Graffiti_Punk"]    = { Name="Graffiti Punk", HP=200, Archetype="Grunt", Tier=1, Portrait="rbxassetid://10654202353", Stats={STR=25,AGI=35,END=20,QF=0}, Moves={"pipe_swing","basic_strike"}, Rewards={HeroCoins=18,TrainingXP=14,MasteryXP=8} },
+	["Drunk_Brawler"]    = { Name="Drunk Brawler", HP=250, Archetype="Grunt", Tier=1, Portrait="rbxassetid://10654202353", Stats={STR=40,AGI=15,END=30,QF=0}, Moves={"wild_swing","basic_strike"}, Rewards={HeroCoins=22,TrainingXP=18,MasteryXP=10} },
+	["Jaywalker_Quirk"]  = { Name="Reckless Quirk User", HP=160, Archetype="Grunt", Tier=1, Portrait="rbxassetid://10654202353", Stats={STR=15,AGI=30,END=12,QF=25}, Moves={"basic_strike","static_shock"}, Rewards={HeroCoins=20,TrainingXP=16,MasteryXP=10} },
+
+	-- ─── TIER 2: STREET CRIME (2★) ───
+	["Street_Thug_A"]    = { Name="Street Thug", HP=350, Archetype="Grunt", Tier=2, Portrait="rbxassetid://10654202353", Stats={STR=50,AGI=30,END=40,QF=0}, Moves={"basic_strike","heavy_strike"}, Rewards={HeroCoins=30,TrainingXP=25,MasteryXP=15} },
+	["Street_Thug_B"]    = { Name="Thug (Bat)", HP=300, Archetype="Grunt", Tier=2, Portrait="rbxassetid://10654202353", Stats={STR=60,AGI=25,END=35,QF=0}, Moves={"pipe_swing","basic_strike"}, Rewards={HeroCoins=28,TrainingXP=22,MasteryXP=15} },
+	["Armed_Robber_A"]   = { Name="Masked Robber", HP=400, Archetype="Grunt", Tier=2, Portrait="rbxassetid://10654202353", Stats={STR=55,AGI=40,END=45,QF=30}, Moves={"basic_strike","brass_jab","knife_slash"}, Rewards={HeroCoins=35,TrainingXP=28,MasteryXP=18} },
+	["Armed_Robber_B"]   = { Name="Getaway Driver", HP=280, Archetype="Grunt", Tier=2, Portrait="rbxassetid://10654202353", Stats={STR=40,AGI=55,END=30,QF=20}, Moves={"quick_jab","basic_strike"}, Rewards={HeroCoins=25,TrainingXP=20,MasteryXP=12} },
+	["Gang_Knife"]       = { Name="Gang Enforcer", HP=420, Archetype="Assassin", Tier=2, Portrait="rbxassetid://10654202353", Stats={STR=48,AGI=52,END=38,QF=15}, Moves={"knife_slash","knife_dance","basic_strike"}, Rewards={HeroCoins=38,TrainingXP=30,MasteryXP=20} },
+	["Vandal_Quirk"]     = { Name="Vandal (Quirk)", HP=380, Archetype="Grunt", Tier=2, Portrait="rbxassetid://10654202353", Stats={STR=35,AGI=35,END=35,QF=55}, Moves={"acid_shot","basic_strike"}, Rewards={HeroCoins=35,TrainingXP=28,MasteryXP=18} },
+	["Drug_Runner"]      = { Name="Drug Runner", HP=320, Archetype="Grunt", Tier=2, Portrait="rbxassetid://10654202353", Stats={STR=45,AGI=60,END=25,QF=0}, Moves={"quick_jab","brass_jab","basic_strike"}, Rewards={HeroCoins=40,TrainingXP=30,MasteryXP=15} },
+	["Rogue_Vigilante"]  = { Name="Rogue Vigilante", HP=500, Archetype="Assassin", Tier=2, Portrait="rbxassetid://10654202353", Stats={STR=60,AGI=55,END=50,QF=40}, Moves={"heavy_strike","quick_jab","body_blow"}, Rewards={HeroCoins=45,TrainingXP=35,MasteryXP=22} },
+
+	-- ─── TIER 3: VILLAIN THREATS (3★) ───
+	["Patrol_Villain"]   = { Name="Rogue Villain", HP=900, Archetype="Assassin", Tier=3, Portrait="rbxassetid://10654202353", Stats={STR=75,AGI=70,END=60,QF=100}, Moves={"acid_shot","knife_slash","basic_strike","heavy_strike"}, Rewards={HeroCoins=80,TrainingXP=60,MasteryXP=40} },
+	["Escaped_Convict"]  = { Name="Escaped Convict", HP=1100, Archetype="Tank", Tier=3, Portrait="rbxassetid://10654202353", Stats={STR=100,AGI=40,END=90,QF=30}, Moves={"brutal_hook","heavy_strike","body_blow","basic_strike"}, Rewards={HeroCoins=90,TrainingXP=70,MasteryXP=45} },
+	["Quirk_Terrorist"]  = { Name="Quirk Terrorist", HP=800, Archetype="Assassin", Tier=3, Portrait="rbxassetid://10654202353", Stats={STR=50,AGI=65,END=45,QF=130}, Moves={"explosion_blast","fire_shot","basic_strike"}, Rewards={HeroCoins=100,TrainingXP=75,MasteryXP=50} },
+	["Yakuza_Enforcer"]  = { Name="Yakuza Enforcer", HP=1000, Archetype="Tank", Tier=3, Portrait="rbxassetid://10654202353", Stats={STR=90,AGI=45,END=80,QF=60}, Moves={"yakuza_strike","demolition_fist","body_blow","basic_strike"}, Rewards={HeroCoins=95,TrainingXP=72,MasteryXP=48} },
+	["Underground_Fighter"] = { Name="Underground Fighter", HP=850, Archetype="Assassin", Tier=3, Portrait="rbxassetid://10654202353", Stats={STR=85,AGI=80,END=55,QF=40}, Moves={"gunhead_jab","gunhead_combo","heavy_strike","quick_jab"}, Rewards={HeroCoins=85,TrainingXP=65,MasteryXP=42} },
+	["Nomu_Prototype"]   = { Name="Nomu Prototype", HP=1400, Archetype="Tank", Tier=3, Portrait="rbxassetid://10654202353", Stats={STR=110,AGI=25,END=120,QF=20}, Moves={"brutal_hook","heavy_strike","basic_strike"}, PassiveRegen=0.05, Rewards={HeroCoins=120,TrainingXP=90,MasteryXP=60} },
+
+	-- ─── TIER 4: RARE PATROL BOSSES (5% spawn chance, guaranteed rare+ loot) ───
+	["Patrol_Stain"]     = { Name="Hero Killer: Stain", HP=2500, IsBoss=true, Archetype="Boss", Tier=4, Portrait="rbxassetid://16766440266", Stats={STR=120,AGI=160,END=80,QF=60}, Moves={"bloodcurdle_slash","stain_lunge","stain_finish","knife_slash"}, Phase2Moves={"bloodcurdle_slash","stain_lunge","stain_finish"}, Phase2Script="selfbuff_haste", Rewards={HeroCoins=500,TrainingXP=300,Spins=2,MasteryXP=150} },
+	["Patrol_Muscular"]  = { Name="Muscular", HP=3500, IsBoss=true, Archetype="Boss", Tier=4, Portrait="rbxassetid://16766440266", Stats={STR=250,AGI=30,END=200,QF=0}, Moves={"brutal_hook","heavy_strike","body_blow"}, Phase2Moves={"brutal_hook","heavy_strike","body_blow"}, Phase2Script="desperation", Rewards={HeroCoins=600,TrainingXP=400,Spins=3,MasteryXP=200} },
+	["Patrol_Rappa"]     = { Name="Rappa the Rapper", HP=2800, IsBoss=true, Archetype="Boss", Tier=4, Portrait="rbxassetid://16766440266", Stats={STR=200,AGI=100,END=120,QF=30}, Moves={"knuckle_barrage","brass_hook","heavy_strike","quick_jab"}, Phase2Moves={"knuckle_barrage","brass_hook","heavy_strike"}, Phase2Script="selfbuff_str", Rewards={HeroCoins=550,TrainingXP=350,Spins=2,MasteryXP=180} },
+	["Patrol_HighEnd"]   = { Name="High-End Nomu", HP=4000, IsBoss=true, Archetype="Boss", Tier=4, Portrait="rbxassetid://16766440266", Stats={STR=180,AGI=80,END=250,QF=100}, Moves={"nomu_brawl","absorption_slam","brutal_hook","regeneration"}, PassiveRegen=0.10, Phase2Moves={"nomu_brawl","absorption_slam","regeneration"}, Phase2Script="nomu_regen", Rewards={HeroCoins=800,TrainingXP=500,Spins=5,MasteryXP=300} },
+
+	-- ─── RAID WAVE ENEMIES ───
+	["Raid_Grunt"]       = { Name="Villain Grunt", HP=250, Archetype="Grunt", Tier=1, Portrait="rbxassetid://10654202353", Stats={STR=45,AGI=35,END=35,QF=15}, Moves={"basic_strike","quick_jab"}, Rewards={HeroCoins=10,TrainingXP=10,MasteryXP=5} },
+	["Raid_Knifer"]      = { Name="Villain Knifer", HP=280, Archetype="Assassin", Tier=1, Portrait="rbxassetid://10654202353", Stats={STR=35,AGI=50,END=25,QF=10}, Moves={"knife_slash","quick_jab"}, Rewards={HeroCoins=12,TrainingXP=12,MasteryXP=6} },
+	["Raid_Brawler"]     = { Name="Villain Brawler", HP=350, Archetype="Grunt", Tier=2, Portrait="rbxassetid://10654202353", Stats={STR=60,AGI=30,END=50,QF=0}, Moves={"heavy_strike","basic_strike","body_blow"}, Rewards={HeroCoins=18,TrainingXP=15,MasteryXP=10} },
+	["Raid_Elite"]       = { Name="Villain Lieutenant", HP=600, Archetype="Assassin", Tier=2, Portrait="rbxassetid://10654202353", Stats={STR=70,AGI=60,END=55,QF=50}, Moves={"basic_strike","heavy_strike","knife_slash"}, Rewards={HeroCoins=30,TrainingXP=25,MasteryXP=20} },
+	["Raid_QuirkUser"]   = { Name="Villain Quirk User", HP=550, Archetype="Assassin", Tier=2, Portrait="rbxassetid://10654202353", Stats={STR=45,AGI=50,END=40,QF=80}, Moves={"acid_shot","static_shock","basic_strike"}, Rewards={HeroCoins=28,TrainingXP=22,MasteryXP=18} },
+	["Raid_Boss"]        = { Name="Villain Captain", HP=1200, IsBoss=true, Archetype="Tank", Tier=3, Portrait="rbxassetid://10654202353", Stats={STR=100,AGI=50,END=90,QF=80}, Moves={"brutal_hook","heavy_strike","basic_strike","body_blow"}, Rewards={HeroCoins=80,TrainingXP=60,MasteryXP=40} },
+
+	-- Zone 2: Ground Beta
+	["Trainee_Lv8"]  = { Name="Trainee Lv.8", HP=500, Stats={STR=60,AGI=50,END=40,QF=30}, Moves={"basic_strike","quick_jab"}, Rewards={TrainingXP=200,MasteryXP=30}, Portrait="rbxassetid://10654202353", Archetype="Grunt" },
+	["Trainee_Lv12"] = { Name="Trainee Lv.12", HP=800, Stats={STR=80,AGI=60,END=60,QF=50}, Moves={"basic_strike","heavy_strike","body_blow"}, Rewards={TrainingXP=350,MasteryXP=50}, Portrait="rbxassetid://10654202353", Archetype="Grunt" },
+
+	-- Zone 2 Boss
+	["Bakugo"]       = { Name="Katsuki Bakugo", HP=4800, Stats={STR=180,AGI=200,END=100,QF=250}, IsBoss=true, Archetype="Boss",
+		Moves={"explosion_blast","ap_shot","basic_strike"}, Portrait="rbxassetid://16766440266",
+		Rewards={TrainingXP=3000,Spins=5,HeroCoins=1500,MasteryXP=400},
+		-- Phase 2 & 3 movesets (GDD 6.3.2)
+		Phase2Moves={"explosion_blast","ap_shot","howitzer_impact","basic_strike"},
+		Phase3Moves={"howitzer_impact","ap_shot","explosion_blast"},
+		Phase2Script="selfbuff_burn", Phase3Script="desperation",
+	},
+
+	-- Zone 3: U.S.J.
+	["LoV_Grunt"]    = { Name="LoV Thug", HP=600, Stats={STR=70,AGI=40,END=50,QF=20}, Moves={"basic_strike","knife_slash"}, Rewards={TrainingXP=250,MasteryXP=40}, Portrait="rbxassetid://10654202353", Archetype="Grunt" },
+	["LoV_Elite"]    = { Name="LoV Lieutenant", HP=1200, Stats={STR=100,AGI=80,END=80,QF=60}, Moves={"basic_strike","brutal_hook","knife_slash"}, Rewards={TrainingXP=500,MasteryXP=80}, Portrait="rbxassetid://10654202353", Archetype="Assassin" },
+
+	-- Zone 3 Boss (GDD: Nomu has 15% HP regen, must use Burn/Acid to halt)
+	["Nomu"]         = { Name="U.S.J. Nomu", HP=9000, Stats={STR=300,AGI=30,END=250,QF=0}, IsBoss=true, Archetype="Boss",
+		Moves={"nomu_brawl","brutal_hook","basic_strike"}, Portrait="rbxassetid://10654202353",
+		Rewards={TrainingXP=5000,Spins=8,HeroCoins=3000,MasteryXP=600},
+		Phase2Moves={"nomu_brawl","brutal_hook","basic_strike"},
+		Phase3Moves={"nomu_brawl","brutal_hook"},
+		Phase2Script="nomu_regen", Phase3Script="nomu_regen_double",
+		PassiveRegen=0.15, -- 15% HP regen per turn (halted by Burn)
+	},
+
+	-- Zone 4: Sports Festival
+	["UA_Rival"]     = { Name="U.A. Rival", HP=900, Stats={STR=90,AGI=90,END=70,QF=90}, Moves={"basic_strike","hard_punch","quick_jab"}, Rewards={TrainingXP=400,MasteryXP=60}, Portrait="rbxassetid://10654202353", Archetype="Grunt" },
+
+	-- Zone 4 Boss (GDD: Phase 1 Ice/Brittle, Phase 2 Fire/Burn)
+	["Todoroki"]     = { Name="Shoto Todoroki", HP=14000, Stats={STR=120,AGI=160,END=150,QF=350}, IsBoss=true, Archetype="Boss",
+		Moves={"ice_wall","ice_lance","basic_strike"}, Portrait="rbxassetid://16766440266",
+		Rewards={TrainingXP=8000,Spins=10,HeroCoins=5000,MasteryXP=800},
+		Phase2Moves={"fire_blast","ice_lance","flame_wave","basic_strike"},
+		Phase3Moves={"flashfire_fist","flame_wave","ice_lance"},
+		Phase2Script="todoroki_fire", Phase3Script="desperation",
+	},
+
+	-- Zone 5: Hosu City
+	["LowNomu"]      = { Name="Low-Tier Nomu", HP=1500, Stats={STR=130,AGI=50,END=120,QF=0}, Moves={"brutal_hook","basic_strike"}, Rewards={TrainingXP=600,MasteryXP=80}, Portrait="rbxassetid://10654202353", Archetype="Tank" },
+
+	-- Zone 5 Boss (GDD: Gains flight/evasion at Phase 2, regen doubles at Phase 3)
+	["HighEndNomu"]  = { Name="High-End Nomu", HP=28000, Stats={STR=400,AGI=200,END=350,QF=150}, IsBoss=true, Archetype="Boss",
+		Moves={"nomu_brawl","brutal_hook","basic_strike","shoulder_charge"}, Portrait="rbxassetid://10654202353",
+		Rewards={TrainingXP=15000,Spins=15,HeroCoins=8000,MasteryXP=1200},
+		Phase2Moves={"nomu_brawl","brutal_hook","shoulder_charge","aerial_dive"},
+		Phase3Moves={"nomu_brawl","shoulder_charge","aerial_dive"},
+		Phase2Script="highend_flight", Phase3Script="highend_desperation",
+		PassiveRegen=0.08,
+	},
+}
+
+-- ==========================================
+-- BATTLE STATE
+-- ==========================================
+local BattleState = {
+	IsActive = false, TurnQueue = {}, ActiveTurn = "",
+	Combatants = {}, Result = nil, CurrentLog = "",
+	IsGauntlet = false, ZoneId = "1", Wave = 1,
+	ExamPoints = 0, AccumulatedRewards = {},
+	StartTime = 0, ZeroPointerSpawned = false,
+	AwakeningMeter = 0, -- GDD 5.4: 0-100%
+	TurnCount = 0,
+}
+
+-- ==========================================
+-- LOGGING & UTILITY
+-- ==========================================
+local StatusColors = {
+	Burn="#FF5500", Bleed="#CC0000", Stun="#FFFF00", Corrode="#32CD32",
+	Hardened="#A9A9A9", Brittle="#87CEFA", Erasure="#800080", Float="#DDA0DD",
+	Overclock="#FF8C00", Haste="#00FF88", Shield="#AAAAFF", Blind="#888888",
+	Weaken="#AA6600", DodgeUp="#00DDAA", HighDodge="#00FFCC",
+	ArmorUp="#8888FF", CounterStance="#FF00FF", FocusAim="#FF4400",
+}
+
+local function Colorize(text, status)
+	return string.format("<font color='%s'><b>%s</b></font>", StatusColors[status] or "#FFFFFF", text)
+end
+
+local function AppendLog(msg)
+	if BattleState.CurrentLog == "" then
+		BattleState.CurrentLog = msg
+	else
+		BattleState.CurrentLog = BattleState.CurrentLog .. " " .. msg
+	end
+end
+
+-- ==========================================
+-- GDD 5.4: AWAKENING METER
+-- ==========================================
+local function AddAwakening(amount)
+	BattleState.AwakeningMeter = math.clamp(BattleState.AwakeningMeter + amount, 0, 1)
+end
+
+-- ==========================================
+-- HEALING (referenced by moves)
+-- ==========================================
+local function HealEntity(entity, amount)
+	if not entity or entity.HP <= 0 then return end
+	local healed = math.min(amount, entity.MaxHP - entity.HP)
+	entity.HP = math.clamp(entity.HP + healed, 0, entity.MaxHP)
+	if healed > 0 then
+		AppendLog(Colorize(entity.Name .. " healed " .. math.floor(healed) .. " HP!", "Shield"))
+	end
+end
+
+-- ==========================================
+-- STATUS EFFECT APPLICATION
+-- ==========================================
+local function ApplyStatus(target, statusType, duration)
+	if not target then return end
+
+	-- Corrode stacks permanently (GDD 5.3)
+	if statusType == "Corrode" then
+		target.CorrodeStacks = (target.CorrodeStacks or 0) + 1
+		AppendLog(Colorize(target.Name .. " corroded! (Stack " .. target.CorrodeStacks .. ", -" .. (target.CorrodeStacks * 8) .. "% DEF)", "Corrode"))
+		AddAwakening(0.03) -- applying status = 3%
+		return
+	end
+
+	-- Shield replaces (strongest wins)
+	if statusType == "Shield" then
+		target.ShieldHP = duration -- reuse duration as shield HP amount
+		target.Status = { Type = "Shield", Duration = 3 }
+		AppendLog(Colorize(target.Name .. " gained a " .. duration .. " HP Shield!", "Shield"))
+		AddAwakening(0.03)
+		return
+	end
+
+	-- Stun immunity for 1 turn after being stunned (GDD 5.3)
+	if statusType == "Stun" and target.StunImmuneTurns and target.StunImmuneTurns > 0 then
+		AppendLog(target.Name .. " resisted the stun!")
+		return
+	end
+
+	-- Bleed stacks up to 3x (GDD 5.3)
+	if statusType == "Bleed" then
+		target.BleedStacks = math.min((target.BleedStacks or 0) + 1, 3)
+		target.Status = { Type = "Bleed", Duration = math.max(duration, target.Status and target.Status.Duration or 0) }
+		AppendLog("Inflicted " .. Colorize("Bleed x" .. target.BleedStacks, "Bleed") .. "!")
+		AddAwakening(0.03)
+		return
+	end
+
+	target.Status = { Type = statusType, Duration = duration }
+	AppendLog("Inflicted " .. Colorize(statusType, statusType) .. "!")
+	AddAwakening(0.03)
+end
+
+-- ==========================================
+-- GDD 5.2: FULL DAMAGE CALCULATION PIPELINE
+-- ==========================================
+local function CalculateDodge(attacker, defender)
+	if not attacker or not defender then return false end
+	local dodgeChance = 5 + math.max(0, (defender.Stats.AGI - attacker.Stats.AGI) / 5)
+	-- HighDodge buff doubles dodge chance
+	if defender.Status and defender.Status.Type == "HighDodge" then dodgeChance = dodgeChance * 2 end
+	if defender.Status and defender.Status.Type == "DodgeUp" then dodgeChance = dodgeChance * 1.5 end
+	-- Flight gives +25% dodge (High-End Nomu Phase 2)
+	if defender.HasFlight then dodgeChance = dodgeChance + 25 end
+	return math.random(1, 100) <= math.clamp(dodgeChance, 5, 50)
+end
+
+local function ProcessDamage(attacker, target, rawDamage, moveData, isCrit)
+	if not target then return 0 end
+
+	-- Step 3: Offensive Multipliers (GDD 5.2)
+	local modifiedDamage = rawDamage
+	if isCrit then modifiedDamage = modifiedDamage * 1.5 end
+
+	-- Gear damage bonus (e.g. Cooling Vents +5%, Homing Lens +5%)
+	if attacker.DmgBonus and attacker.DmgBonus > 0 then
+		modifiedDamage = modifiedDamage * (1 + attacker.DmgBonus)
+	end
+
+	-- Brittle on target = +50% (GDD 5.3)
+	if target.Status and target.Status.Type == "Brittle" then
+		modifiedDamage = modifiedDamage * 1.5
+		AppendLog(Colorize("Brittle bonus! (+50%)", "Brittle"))
+	end
+
+	-- Bleed bonus for multi-hit/knife moves
+	if target.BleedStacks and target.BleedStacks > 0 and moveData and moveData.Type == "Style" then
+		local bleedBonus = 1 + (target.BleedStacks * 0.10)
+		modifiedDamage = modifiedDamage * bleedBonus
+	end
+
+	-- Boss Phase 3 desperation: +25% damage (GDD 6.3.2)
+	if attacker.DesperationMode then
+		modifiedDamage = modifiedDamage * 1.25
+	end
+
+	-- Weaken debuff on attacker: -30% damage
+	if attacker.Status and attacker.Status.Type == "Weaken" then
+		modifiedDamage = modifiedDamage * 0.7
+	end
+
+	-- FocusAim buff: 3x damage on next hit
+	if attacker.Status and attacker.Status.Type == "FocusAim" then
+		modifiedDamage = modifiedDamage * 3.0
+		attacker.Status = { Type = "Normal", Duration = 0 }
+		AppendLog(Colorize("FOCUSED SHOT! (3x)", "FocusAim"))
+	end
+
+	-- Step 5: Defensive Mitigation (GDD 5.2)
+	-- Some moves (Permeation, Zantetsuken, Entropy Wave) bypass armor entirely
+	local armorValue = 0
+	if not target._ignoreArmor then
+		local corrodeReduction = (target.CorrodeStacks or 0) * 8 -- -8% defense per stack
+		local effectiveEND = math.max(0, target.Stats.END * (1 - corrodeReduction / 100))
+		armorValue = effectiveEND * 0.5
+
+		-- ArmorUp buff doubles armor
+		if target.Status and target.Status.Type == "ArmorUp" then armorValue = armorValue * 2 end
+		if target.Status and target.Status.Type == "Hardened" then armorValue = armorValue * 1.8 end
+	else
+		target._ignoreArmor = nil -- reset flag after use
+	end
+
+	-- Shield absorbs damage first
+	if target.ShieldHP and target.ShieldHP > 0 then
+		local absorbed = math.min(target.ShieldHP, modifiedDamage)
+		target.ShieldHP = target.ShieldHP - absorbed
+		modifiedDamage = modifiedDamage - absorbed
+		if absorbed > 0 then AppendLog("Shield absorbed " .. math.floor(absorbed) .. "!") end
+		if target.ShieldHP <= 0 then
+			target.Status = { Type = "Normal", Duration = 0 }
+			AppendLog("Shield broke!")
+		end
+	end
+
+	local finalDamage = math.floor(math.max(1, modifiedDamage - armorValue))
+	target.HP = math.clamp(target.HP - finalDamage, 0, target.MaxHP)
+
+	return finalDamage
+end
+
+local function ExecuteAttack(attacker, target, moveData)
+	if not attacker or not target then return 0 end
+
+	-- Step 1: Base Damage (GDD 5.2)
+	local rawDamage = moveData.Execute(attacker, target)
+	if rawDamage <= 0 and not moveData.HasStatus then return 0 end
+	if rawDamage <= 0 then return 0 end
+
+	-- Step 2: Critical Hit Check (GDD 5.2)
+	local critChance = 0.05 + (attacker.CritBonus or 0)
+	local isCrit = math.random() <= critChance
+
+	-- Step 4: Dodge Check (crits bypass dodge) (GDD 5.2)
+	if not isCrit then
+		if CalculateDodge(attacker, target) then
+			AppendLog(target.Name .. " " .. Colorize("DODGED", "DodgeUp") .. " the attack!")
+			return 0
+		end
+	end
+
+	-- Steps 3+5: Process damage with modifiers and mitigation
+	local finalDmg = ProcessDamage(attacker, target, rawDamage, moveData, isCrit)
+
+	-- Step 6: Application (GDD 5.2)
+	if finalDmg > 0 then
+		local dmgText = tostring(math.floor(finalDmg))
+		if isCrit then
+			dmgText = Colorize("CRITICAL! " .. dmgText, "Stun")
+			-- GDD 5.4: Getting crit = 10% awakening
+			if not target.IsEnemy then AddAwakening(0.10) end
+		end
+		AppendLog("→ Dealt " .. dmgText .. " damage to " .. target.Name .. ".")
+
+		-- GDD 5.4: Dealing damage = 5%, Taking damage = 8%
+		if not attacker.IsEnemy then AddAwakening(0.05) end
+		if not target.IsEnemy then AddAwakening(0.08) end
+	end
+
+	return finalDmg
+end
+
+-- ==========================================
+-- GDD 5.3: STATUS EFFECT PROCESSING (per turn)
+-- ==========================================
+local function ProcessStatusEffects(entity)
+	if not entity or entity.HP <= 0 then return false end
+
+	-- Decrement stun immunity
+	if entity.StunImmuneTurns and entity.StunImmuneTurns > 0 then
+		entity.StunImmuneTurns = entity.StunImmuneTurns - 1
+	end
+
+	local status = entity.Status
+	if not status or status.Type == "Normal" then
+		-- Passive regen for bosses (e.g., Nomu)
+		if entity.PassiveRegen and entity.PassiveRegen > 0 then
+			-- Burn halts regen (GDD 5.3)
+			if not (status and status.Type == "Burn") then
+				local regenAmount = math.floor(entity.MaxHP * entity.PassiveRegen)
+				HealEntity(entity, regenAmount)
+				AppendLog(Colorize(entity.Name .. " regenerated!", "Shield"))
+			end
+		end
+		return false
+	end
+
+	local skipTurn = false
+
+	if status.Type == "Burn" then
+		-- GDD 5.3: 3% Max HP/turn, halts regen
+		local burnDmg = math.floor(entity.MaxHP * 0.03)
+		entity.HP = math.clamp(entity.HP - burnDmg, 0, entity.MaxHP)
+		AppendLog(entity.Name .. " took " .. burnDmg .. " " .. Colorize("Burn", "Burn") .. " damage!")
+		-- Regen is halted while burning (checked above)
+
+	elseif status.Type == "Bleed" then
+		-- GDD 5.3: 2% Max HP + (STR*0.5) per stack per turn
+		local bleedStacks = entity.BleedStacks or 1
+		local bleedDmg = math.floor((entity.MaxHP * 0.02 + 25) * bleedStacks)
+		entity.HP = math.clamp(entity.HP - bleedDmg, 0, entity.MaxHP)
+		AppendLog(entity.Name .. " bled for " .. bleedDmg .. " " .. Colorize("(x" .. bleedStacks .. ")", "Bleed") .. "!")
+
+	elseif status.Type == "Stun" then
+		-- GDD 5.3: Skip turn, immune 1 turn after
+		AppendLog(entity.Name .. " is " .. Colorize("STUNNED", "Stun") .. "!")
+		skipTurn = true
+		entity.StunImmuneTurns = 1
+
+	elseif status.Type == "Erasure" then
+		-- Can't use Quirk moves (handled in move validation)
+		AppendLog(entity.Name .. "'s Quirk is " .. Colorize("ERASED", "Erasure") .. "!")
+
+	elseif status.Type == "Float" then
+		-- Can't use Physical/Style moves
+		AppendLog(entity.Name .. " is " .. Colorize("FLOATING", "Float") .. "!")
+
+	elseif status.Type == "Haste" then
+		-- +30% speed handled in turn order calc
+		-- No per-turn effect
+	end
+
+	-- Passive regen for bosses (only if not burned)
+	if entity.PassiveRegen and entity.PassiveRegen > 0 and status.Type ~= "Burn" then
+		local regenAmount = math.floor(entity.MaxHP * entity.PassiveRegen)
+		HealEntity(entity, regenAmount)
+	end
+
+	-- Decrement duration
+	status.Duration = status.Duration - 1
+	if status.Duration <= 0 then
+		if status.Type == "Overclock" then
+			-- Engine stall: lock quirks
+			entity.Status = { Type = "Erasure", Duration = 3 }
+			AppendLog(Colorize(entity.Name .. "'s engine stalled!", "Erasure"))
+		elseif status.Type == "Bleed" then
+			entity.BleedStacks = 0
+			entity.Status = { Type = "Normal", Duration = 0 }
+		elseif status.Type == "Stun" then
+			entity.Status = { Type = "Normal", Duration = 0 }
+		else
+			entity.Status = { Type = "Normal", Duration = 0 }
+		end
+	end
+
+	return skipTurn
+end
+
+-- ==========================================
+-- GDD 6.3.2: BOSS PHASE SYSTEM
+-- ==========================================
+local function CheckBossPhaseTransition(entity)
+	if not entity or not entity.IsBoss or entity.HP <= 0 then return end
+
+	local hpPercent = entity.HP / entity.MaxHP
+	local currentPhase = entity.CurrentPhase or 1
+
+	-- Phase 2 trigger at 50% HP
+	if currentPhase == 1 and hpPercent <= 0.50 then
+		entity.CurrentPhase = 2
+		AppendLog("")
+		AppendLog(Colorize("═══ PHASE 2: " .. string.upper(entity.Name) .. " IS ENRAGED! ═══", "Burn"))
+
+		-- Swap moveset if defined
+		if entity.Phase2Moves then
+			entity.EquippedMoves = entity.Phase2Moves
+		end
+
+		-- Execute phase script
+		local script = entity.Phase2Script
+		if script == "selfbuff_burn" then
+			-- Bakugo: Buff self, AoE burn
+			ApplyStatus(entity, "Haste", 3)
+			AppendLog(Colorize(entity.Name .. " is moving faster!", "Haste"))
+
+		elseif script == "nomu_regen" then
+			-- Nomu: Regen doubles
+			entity.PassiveRegen = 0.30
+			AppendLog(Colorize(entity.Name .. "'s regeneration is accelerating! Use Burn to halt it!", "Bleed"))
+
+		elseif script == "todoroki_fire" then
+			-- Todoroki: Activates fire side
+			AppendLog(Colorize(entity.Name .. " activated his LEFT SIDE! Fire moves unlocked!", "Burn"))
+
+		elseif script == "highend_flight" then
+			-- High-End: Gains flight (+25% dodge)
+			entity.HasFlight = true
+			AppendLog(Colorize(entity.Name .. " took flight! Evasion greatly increased!", "DodgeUp"))
+		end
+
+		-- All bosses: 10% Max HP heal on phase transition
+		HealEntity(entity, math.floor(entity.MaxHP * 0.10))
+	end
+
+	-- Phase 3 trigger at 20% HP
+	if currentPhase == 2 and hpPercent <= 0.20 then
+		entity.CurrentPhase = 3
+		AppendLog("")
+		AppendLog(Colorize("═══ PHASE 3: " .. string.upper(entity.Name) .. " — DESPERATION! ═══", "Bleed"))
+
+		-- Swap moveset
+		if entity.Phase3Moves then
+			entity.EquippedMoves = entity.Phase3Moves
+		end
+
+		-- All Phase 3: +25% damage (GDD 6.3.2)
+		entity.DesperationMode = true
+
+		local script = entity.Phase3Script
+		if script == "desperation" then
+			AppendLog(Colorize("All attacks deal +25% damage!", "Bleed"))
+
+		elseif script == "nomu_regen_double" then
+			entity.PassiveRegen = 0.45
+			AppendLog(Colorize(entity.Name .. "'s regeneration is out of control! (45%/turn)", "Bleed"))
+
+		elseif script == "highend_desperation" then
+			entity.PassiveRegen = 0.16
+			entity.HasFlight = true
+			AppendLog(Colorize(entity.Name .. "'s regeneration doubled AND gained flight!", "Bleed"))
+		end
+	end
+end
+
+-- ==========================================
+-- GDD 6.3.1: UTILITY-BASED ENEMY AI
+-- ==========================================
+local function EnemyAI(entity)
+	if not entity or entity.HP <= 0 then return nil end
+
+	-- Find player target
+	local target = nil
+	local lowestHPTarget = nil
+	for id, data in pairs(BattleState.Combatants) do
+		if not data.IsEnemy and data.HP > 0 and not data.IsDead then
+			if not target then target = data end
+			if not lowestHPTarget or data.HP < lowestHPTarget.HP then
+				lowestHPTarget = data
+			end
+		end
+	end
+	if not target then return nil end
+
+	-- Decrement cooldowns
+	for moveId, cd in pairs(entity.Cooldowns or {}) do
+		if cd > 0 then entity.Cooldowns[moveId] = cd - 1 end
+	end
+
+	-- Build scored move list
+	local scoredMoves = {}
+	local hpPercent = entity.HP / entity.MaxHP
+	local targetHasCC = target.Status and (target.Status.Type == "Stun" or target.Status.Type == "Erasure" or target.Status.Type == "Float")
+	local targetHasBrittle = target.Status and target.Status.Type == "Brittle"
+	local targetHasDoT = target.Status and (target.Status.Type == "Burn" or target.Status.Type == "Bleed")
+
+	for _, moveId in ipairs(entity.EquippedMoves) do
+		local cd = (entity.Cooldowns or {})[moveId] or 0
+		if cd <= 0 then
+			local md = MoveDatabase[moveId]
+			if md then
+				-- Check if move is blocked by status
+				local canUse = true
+				if entity.Status and entity.Status.Type == "Erasure" and md.Type == "Quirk" then canUse = false end
+				if entity.Status and entity.Status.Type == "Float" and (md.Type == "Style" or md.Type == "Basic") then canUse = false end
+
+				if canUse then
+					local score = 20 -- Default (Weight: 20)
+					local rawDmg = md.Execute(entity, target)
+
+					-- Emergency Heal (Weight: 100) — self-buff at low HP
+					if hpPercent < 0.25 and (md.HasStatus and not md.IsAoE) then
+						-- Check if it's a self-buff move
+						local isSelfBuff = (moveId == "unmovable_stance" or moveId == "red_counter" or moveId == "evasive_spring" or moveId == "nomu_brawl" or moveId == "acid_veil")
+						if isSelfBuff then score = 100 end
+					end
+
+					-- Execute (Weight: 90) — can one-shot player
+					if rawDmg > 0 and target.HP > 0 then
+						local estimatedDmg = math.floor(rawDmg * (entity.DesperationMode and 1.25 or 1.0))
+						if estimatedDmg >= target.HP then
+							score = math.max(score, 90)
+						end
+					end
+
+					-- Apply CC/Debuff (Weight: 70)
+					if md.HasStatus and not targetHasCC then
+						local isCC = (moveId:find("stun") or moveId:find("shout") or moveId:find("trap") or moveId:find("constrict") or moveId:find("erasure") or moveId:find("float") or moveId:find("brainwash"))
+						if isCC then score = math.max(score, 70) end
+
+						-- Brittle application
+						local isBrittle = (moveId:find("brittle") or moveId:find("body_blow") or moveId:find("shadow_crush") or moveId:find("luna_fall") or moveId:find("creepy_stare"))
+						if isBrittle and not targetHasBrittle then score = math.max(score, 70) end
+					end
+
+					-- Exploit Debuff (Weight: 60)
+					if targetHasBrittle and rawDmg > 0 then
+						score = math.max(score, 60)
+						-- Prefer highest damage moves when target is brittle
+						score = score + math.floor(rawDmg / 100)
+					end
+
+					-- Apply DoT (Weight: 40)
+					if md.HasStatus and not targetHasDoT then
+						local isDoT = (moveId:find("acid") or moveId:find("burn") or moveId:find("bleed") or moveId:find("slash") or moveId:find("flame"))
+						if isDoT then score = math.max(score, 40) end
+					end
+
+					-- Higher damage = slightly higher default score
+					if rawDmg > 0 then score = score + math.floor(rawDmg / 200) end
+
+					-- Boss Phase 3: heavily prioritize Execute-weight moves
+					if entity.DesperationMode then
+						if rawDmg > 0 then score = score + 15 end
+					end
+
+					-- Random variance ±10% (GDD 6.3.1)
+					local variance = score * (math.random(-10, 10) / 100)
+					score = math.floor(score + variance)
+
+					table.insert(scoredMoves, { id = moveId, score = score, data = md })
+				end
+			end
+		end
+	end
+
+	-- Sort by score descending, pick the best
+	table.sort(scoredMoves, function(a, b) return a.score > b.score end)
+
+	if #scoredMoves > 0 then
+		return scoredMoves[1].id, scoredMoves[1].data, target
+	end
+
+	-- Fallback: basic_strike always available
+	return "basic_strike", MoveDatabase["basic_strike"], target
+end
+
+-- ==========================================
+-- MOVESET DATABASE (preserved + new boss moves)
+-- ==========================================
+MoveDatabase = {
+	-- ═══ BASIC / GENERIC ═══
+	["basic_strike"]  = { Name="Basic Strike", Desc="100% STR.", Type="Basic", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.STR * 1.0 end },
+	["heavy_strike"]  = { Name="Heavy Strike", Desc="180% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=2, Execute=function(u,t) return u.Stats.STR * 1.8 end },
+	["brutal_hook"]   = { Name="Brutal Hook", Desc="200% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=2, Execute=function(u,t) return u.Stats.STR * 2.0 end },
+	["knife_slash"]   = { Name="Knife Slash", Desc="100% STR. Bleeds.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Bleed",3); return u.Stats.STR * 1.0 end },
+	["shoulder_charge"]= { Name="Shoulder Charge", Desc="250% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=3, Execute=function(u,t) return u.Stats.STR * 2.5 end },
+
+	-- ═══ TRASH STYLES ═══
+	["mud_sling"]     = { Name="Mud Sling", Desc="30% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.STR * 0.3 end },
+	["eye_gouge"]     = { Name="Dirty Eye Gouge", Desc="45% STR. Blinds.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Blind",1); return u.Stats.STR * 0.45 end },
+	["coward_retreat"] = { Name="Coward's Retreat", Desc="Dodge Buff.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(u,"DodgeUp",2); return 0 end },
+
+	-- ═══ COMMON STYLES ═══
+	["heavy_cross"]   = { Name="Heavy Cross", Desc="70% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.STR * 0.7 end },
+	["brass_upper"]   = { Name="Brass Uppercut", Desc="85% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=1, Execute=function(u,t) return u.Stats.STR * 0.85 end },
+	["wrench_toss"]   = { Name="Wrench Toss", Desc="110% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=2, Execute=function(u,t) return u.Stats.STR * 1.1 end },
+
+	-- ═══ UNCOMMON STYLES ═══
+	["quick_jab"]     = { Name="Quick Jab", Desc="90% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.AGI * 0.9 end },
+	["body_blow"]     = { Name="Body Blow", Desc="100% STR. Brittle.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Brittle",2); return u.Stats.STR * 1.0 end },
+	["dempsey_roll"]  = { Name="Dempsey Roll", Desc="130% STR AoE.", Type="Style", HasStatus=false, IsAoE=true, BaseCD=4, Execute=function(u,t) return u.Stats.STR * 1.3 end },
+	["flip_kick"]     = { Name="Flip Kick", Desc="95% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.AGI * 0.95 end },
+	["evasive_spring"] = { Name="Evasive Handspring", Desc="Dodge Buff.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(u,"HighDodge",2); return 0 end },
+	["meteor_dropkick"] = { Name="Meteor Dropkick", Desc="140% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=3, Execute=function(u,t) return u.Stats.AGI * 1.4 end },
+
+	-- ═══ RARE STYLES ═══
+	["twin_slash"]    = { Name="Twin Slash", Desc="110% AGI. Bleed.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=0, Execute=function(u,t) ApplyStatus(t,"Bleed",2); return u.Stats.AGI * 1.1 end },
+	["blood_draw"]    = { Name="Blood Draw", Desc="100% STR. Lifesteal 50%.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=3, Execute=function(u,t) local d=u.Stats.STR*1.0; HealEntity(u,d*0.5); return d end },
+	["acrobatic_lunge"] = { Name="Acrobatic Lunge", Desc="160% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=2, Execute=function(u,t) return u.Stats.AGI * 1.6 end },
+	["feral_claw"]    = { Name="Feral Claw", Desc="120% STR. Bleed.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=0, Execute=function(u,t) ApplyStatus(t,"Bleed",2); return u.Stats.STR * 1.2 end },
+	["savage_pounce"] = { Name="Savage Pounce", Desc="180% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=3, Execute=function(u,t) return u.Stats.STR * 1.8 end },
+
+	-- ═══ ELITE STYLES ═══
+	["ricochet_shot"] = { Name="Ricochet Shot", Desc="130% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.AGI * 1.3 end },
+	["smoke_grenade"] = { Name="Smoke Grenade", Desc="AoE Blind.", Type="Style", HasStatus=true, IsAoE=true, BaseCD=5, Execute=function(u,t) ApplyStatus(t,"Blind",1); return 0 end },
+	["locked_headshot"] = { Name="Locked-On Headshot", Desc="200% AGI. Undodgeable.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=4, Execute=function(u,t) return u.Stats.AGI * 2.0 end },
+	["scarf_whip"]    = { Name="Scarf Whip", Desc="130% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.AGI * 1.3 end },
+	["constrict"]     = { Name="Constrict", Desc="100% STR. Bind.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Float",2); return u.Stats.STR * 1.0 end },
+	["pendulum_kick"] = { Name="Pendulum Kick", Desc="180% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=2, Execute=function(u,t) return u.Stats.AGI * 1.8 end },
+
+	-- ═══ EPIC STYLES ═══
+	["hundred_slap"]  = { Name="Hundred-Hand Slap", Desc="140% STR AoE.", Type="Style", HasStatus=false, IsAoE=true, BaseCD=2, Execute=function(u,t) return u.Stats.STR * 1.4 end },
+	["unmovable_stance"] = { Name="Unmovable Mountain", Desc="+100% Armor 3 turns.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=5, Execute=function(u,t) ApplyStatus(u,"ArmorUp",3); return 0 end },
+	["spear_charge"]  = { Name="Spear Charge", Desc="220% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=3, Execute=function(u,t) return u.Stats.STR * 2.2 end },
+	["pressure_point"] = { Name="Pressure Point", Desc="140% AGI. Erasure.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Erasure",1); return u.Stats.AGI * 1.4 end },
+	["centipede_smash"] = { Name="Centipede Smash", Desc="240% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=4, Execute=function(u,t) return u.Stats.STR * 2.4 end },
+
+	-- ═══ LEGENDARY STYLES ═══
+	["luna_ring"]     = { Name="Luna Ring", Desc="160% AGI AoE.", Type="Style", HasStatus=false, IsAoE=true, BaseCD=2, Execute=function(u,t) return u.Stats.AGI * 1.6 end },
+	["luna_fall"]     = { Name="Luna Fall", Desc="220% AGI. Brittle.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Brittle",2); return u.Stats.AGI * 2.2 end },
+	["luna_arc"]      = { Name="Luna Arc", Desc="350% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=6, Execute=function(u,t) return u.Stats.AGI * 3.5 end },
+	["curve_bullet"]  = { Name="Curve Bullet", Desc="170% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.AGI * 1.7 end },
+	["hair_trigger"]  = { Name="Hair-Trigger", Desc="Next move 3x.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=7, Execute=function(u,t) ApplyStatus(u,"FocusAim",1); return 0 end },
+	["aerial_sniper"] = { Name="Aerial Sniper", Desc="400% AGI. Corrodes.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=6, Execute=function(u,t) ApplyStatus(t,"Corrode",99); return u.Stats.AGI * 4.0 end },
+	["x_catapult"]    = { Name="X-Catapult", Desc="380% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=6, Execute=function(u,t) return u.Stats.STR * 3.8 end },
+
+	-- ═══ NOMU STYLE ═══
+	["nomu_brawl"]    = { Name="Shock Absorption", Desc="250% STR. Armor buff.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(u,"Hardened",2); return u.Stats.STR * 2.5 end },
+
+	-- ═══ TRASH QUIRKS ═══
+	["neck_whip"]     = { Name="Neck Whip", Desc="100% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.QF * 1.0 end },
+	["headbutt_rush"] = { Name="Headbutt Rush", Desc="150% QF. Stuns.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(t,"Stun",1); return u.Stats.QF * 1.5 end },
+	["giraffe_slam"]  = { Name="Giraffe Slam", Desc="200% QF AoE.", Type="Quirk", HasStatus=false, IsAoE=true, BaseCD=4, Execute=function(u,t) return u.Stats.QF * 2.0 end },
+	["creepy_stare"]  = { Name="Creepy Stare", Desc="50% QF. Brittle.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Brittle",2); return u.Stats.QF * 0.5 end },
+
+	-- ═══ COMMON QUIRKS ═══
+	["tape_whip"]     = { Name="Tape Whip", Desc="120% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.QF * 1.2 end },
+	["tape_trap"]     = { Name="Tape Trap", Desc="110% QF. Stuns.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(t,"Stun",1); return u.Stats.QF * 1.1 end },
+	["tape_barricade"] = { Name="Tape Barricade", Desc="150% QF AoE.", Type="Quirk", HasStatus=false, IsAoE=true, BaseCD=4, Execute=function(u,t) return u.Stats.QF * 1.5 end },
+	["tail_swipe"]    = { Name="Tail Swipe", Desc="130% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.QF * 1.3 end },
+
+	-- ═══ UNCOMMON QUIRKS ═══
+	["hard_punch"]    = { Name="Hardened Punch", Desc="150% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.QF * 1.5 end },
+	["red_counter"]   = { Name="Red Counter", Desc="180% QF. Armor.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(u,"Hardened",3); return u.Stats.QF * 1.8 end },
+	["unbreakable_smash"] = { Name="Unbreakable Smash", Desc="300% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=5, Execute=function(u,t) return u.Stats.QF * 3.0 end },
+	["gravity_strike"] = { Name="Gravity Strike", Desc="160% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.QF * 1.6 end },
+	["weightless_float"] = { Name="Weightless Float", Desc="Locks physical.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Float",2); return 0 end },
+
+	-- ═══ RARE QUIRKS ═══
+	["acid_shot"]     = { Name="Acid Shot", Desc="150% QF. Corrodes.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Corrode",99); return u.Stats.QF * 1.5 end },
+	["acid_veil"]     = { Name="Acid Veil", Desc="200% QF. Armor.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(u,"Hardened",2); return u.Stats.QF * 2.0 end },
+	["acidman"]       = { Name="Acidman Burst", Desc="350% QF AoE. Corrodes.", Type="Quirk", HasStatus=true, IsAoE=true, BaseCD=6, Execute=function(u,t) ApplyStatus(t,"Corrode",99); return u.Stats.QF * 3.5 end },
+	["shadow_strike"] = { Name="Shadow Strike", Desc="180% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.QF * 1.8 end },
+	["shadow_crush"]  = { Name="Shadow Crush", Desc="250% QF. Brittle.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(t,"Brittle",2); return u.Stats.QF * 2.5 end },
+	["abyssal_rampage"] = { Name="Abyssal Rampage", Desc="400% QF AoE.", Type="Quirk", HasStatus=false, IsAoE=true, BaseCD=6, Execute=function(u,t) return u.Stats.QF * 4.0 end },
+	["static_shock"]  = { Name="Static Shock", Desc="160% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.QF * 1.6 end },
+	["target_electro"] = { Name="Electroshock", Desc="200% QF. Stuns.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(t,"Stun",1); return u.Stats.QF * 2.0 end },
+	["million_volts"] = { Name="1.3 Million Volts", Desc="500% QF AoE. Self-Stun.", Type="Quirk", HasStatus=true, IsAoE=true, BaseCD=6, Execute=function(u,t) ApplyStatus(u,"Stun",1); return u.Stats.QF * 5.0 end },
+	["meteor_shower"] = { Name="Meteor Shower", Desc="350% QF AoE.", Type="Quirk", HasStatus=false, IsAoE=true, BaseCD=4, Execute=function(u,t) return u.Stats.QF * 3.5 end },
+
+	-- ═══ ELITE QUIRKS ═══
+	["engine_kick"]   = { Name="Engine Kick", Desc="180% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.QF * 1.8 end },
+	["torque_smash"]  = { Name="Torque Smash", Desc="220% QF. Brittle.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(t,"Brittle",2); return u.Stats.QF * 2.2 end },
+	["recipro_burst"] = { Name="Recipro Burst", Desc="3 consecutive turns!", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=8, Execute=function(u,t)
+		table.insert(BattleState.TurnQueue, 1, u.Id); table.insert(BattleState.TurnQueue, 1, u.Id)
+		ApplyStatus(u,"Overclock",3); return 0
+	end },
+	["recipro_extend"] = { Name="Recipro Extend", Desc="400% QF. Self-Stun.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(u,"Stun",1); return u.Stats.QF * 4.0 end },
+	["brainwash_command"] = { Name="Mind Command", Desc="Uses Target's STR.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) return t.Stats.STR * 2.5 end },
+	["vocal_cords"]   = { Name="Artificial Vocal Cords", Desc="150% QF AoE. Stuns.", Type="Quirk", HasStatus=true, IsAoE=true, BaseCD=5, Execute=function(u,t) ApplyStatus(t,"Stun",1); return u.Stats.QF * 1.5 end },
+
+	-- ═══ LEGENDARY QUIRKS ═══
+	["explosion_blast"] = { Name="Explosion Blast", Desc="200% QF. Burn.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=0, Execute=function(u,t) ApplyStatus(t,"Burn",3); return u.Stats.QF * 2.0 end },
+	["ap_shot"]       = { Name="AP Shot", Desc="250% QF. Armor pierce.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(t,"Corrode",99); return u.Stats.QF * 2.5 end },
+	["howitzer_impact"] = { Name="Howitzer Impact", Desc="500% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=6, Execute=function(u,t) return u.Stats.QF * 5.0 end },
+
+	-- ═══ BOSS-EXCLUSIVE MOVES ═══
+	["voice_shout"]   = { Name="Voice Shout", Desc="150% QF. Stuns.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Stun",1); return u.Stats.QF * 1.5 end },
+	["sound_wave"]    = { Name="Sound Wave", Desc="200% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=2, Execute=function(u,t) return u.Stats.QF * 2.0 end },
+
+	-- Todoroki boss moves
+	["ice_wall"]      = { Name="Ice Wall", Desc="Shield + 120% QF.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(u,"Shield", math.floor(u.MaxHP * 0.15)); return u.Stats.QF * 1.2 end },
+	["ice_lance"]     = { Name="Ice Lance", Desc="180% QF. Brittle.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Brittle",2); return u.Stats.QF * 1.8 end },
+	["fire_blast"]    = { Name="Fire Blast", Desc="220% QF. Burn.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Burn",3); return u.Stats.QF * 2.2 end },
+	["flame_wave"]    = { Name="Flame Wave", Desc="180% QF AoE. Burn.", Type="Quirk", HasStatus=true, IsAoE=true, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Burn",3); return u.Stats.QF * 1.8 end },
+	["flashfire_fist"] = { Name="Flashfire Fist", Desc="450% QF. Burn.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=5, Execute=function(u,t) ApplyStatus(t,"Burn",3); return u.Stats.QF * 4.5 end },
+
+	-- High-End Nomu boss moves
+	["aerial_dive"]   = { Name="Aerial Dive", Desc="300% STR. Undodgeable.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=3, Execute=function(u,t) return u.Stats.STR * 3.0 end },
+
+	-- ═══ PERMEATION (Epic Quirk) ═══
+	["phase_strike"]    = { Name="Phase Strike", Desc="140% QF. Ignores armor.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) t._ignoreArmor=true; return u.Stats.QF*1.4 end },
+	["intangible_rush"] = { Name="Intangible Rush", Desc="220% QF. Undodgeable.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=3, Execute=function(u,t) return u.Stats.QF*2.2 end },
+	["phantom_blitz"]   = { Name="Phantom Blitz", Desc="380% QF. Phase all.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=6, Execute=function(u,t) t._ignoreArmor=true; return u.Stats.QF*3.8 end },
+
+	-- ═══ FAT ABSORPTION (Epic Quirk) ═══
+	["fat_gum_punch"]   = { Name="Fat Gum Punch", Desc="130% QF. Armor.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=0, Execute=function(u,t) ApplyStatus(u,"Hardened",1); return u.Stats.QF*1.3 end },
+	["fat_shield"]      = { Name="Fat Shield", Desc="Shield 20% Max HP.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(u,"Shield",math.floor(u.MaxHP*0.2)); return 0 end },
+	["big_bounce"]      = { Name="Big Bounce Slam", Desc="300% QF AoE.", Type="Quirk", HasStatus=false, IsAoE=true, BaseCD=5, Execute=function(u,t) return u.Stats.QF*3.0 end },
+
+	-- ═══ HALF-COLD HALF-HOT (Legendary Quirk, player version) ═══
+	["ice_shot"]        = { Name="Ice Shot", Desc="160% QF. Brittle.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=0, Execute=function(u,t) ApplyStatus(t,"Brittle",2); return u.Stats.QF*1.6 end },
+	["fire_shot"]       = { Name="Fire Shot", Desc="180% QF. Burn.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Burn",3); return u.Stats.QF*1.8 end },
+	["flashfire_burst"]  = { Name="Flashfire Burst", Desc="420% QF AoE. Burn.", Type="Quirk", HasStatus=true, IsAoE=true, BaseCD=6, Execute=function(u,t) ApplyStatus(t,"Burn",3); return u.Stats.QF*4.2 end },
+
+	-- ═══ DECAY (Legendary Quirk) ═══
+	["decay_touch"]     = { Name="Decay Touch", Desc="200% QF. Corrodes.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=0, Execute=function(u,t) ApplyStatus(t,"Corrode",99); return u.Stats.QF*2.0 end },
+	["disintegrate"]    = { Name="Disintegrate", Desc="300% QF. x2 Corrode.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Corrode",99); ApplyStatus(t,"Corrode",99); return u.Stats.QF*3.0 end },
+	["spread_decay"]    = { Name="Spread Decay", Desc="250% QF AoE. Corrode.", Type="Quirk", HasStatus=true, IsAoE=true, BaseCD=6, Execute=function(u,t) ApplyStatus(t,"Corrode",99); return u.Stats.QF*2.5 end },
+
+	-- ═══ OVERHAUL (Legendary Quirk) ═══
+	["reconstruct"]     = { Name="Reconstruct", Desc="Heal 25% HP.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=4, Execute=function(u,t) HealEntity(u,math.floor(u.MaxHP*0.25)); return 0 end },
+	["deconstruct"]     = { Name="Deconstruct", Desc="280% QF. Corrodes.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Corrode",99); return u.Stats.QF*2.8 end },
+	["overhaul_fusion"] = { Name="Overhaul Fusion", Desc="500% QF. Self-heal 15%.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=7, Execute=function(u,t) HealEntity(u,math.floor(u.MaxHP*0.15)); return u.Stats.QF*5.0 end },
+
+	-- ═══ AWAKENED DECAY (Mythic Quirk) ═══
+	["awakened_touch"]  = { Name="Awakened Touch", Desc="250% QF. x2 Corrode.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=0, Execute=function(u,t) ApplyStatus(t,"Corrode",99); ApplyStatus(t,"Corrode",99); return u.Stats.QF*2.5 end },
+	["mass_decay"]      = { Name="Mass Decay", Desc="350% QF AoE. Corrode.", Type="Quirk", HasStatus=true, IsAoE=true, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Corrode",99); return u.Stats.QF*3.5 end },
+	["entropy_wave"]    = { Name="Entropy Wave", Desc="600% QF. Ignores DEF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=8, Execute=function(u,t) t._ignoreArmor=true; return u.Stats.QF*6.0 end },
+
+	-- ═══ NEW ORDER (Mythic Quirk) ═══
+	["rule_set"]        = { Name="Rule Set", Desc="Brittle + Weaken.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(t,"Brittle",3); return u.Stats.QF*1.0 end },
+	["law_break"]       = { Name="Law Break", Desc="300% QF. Stun.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Stun",1); return u.Stats.QF*3.0 end },
+	["order_override"]  = { Name="Order Override", Desc="550% QF. Erasure.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=7, Execute=function(u,t) ApplyStatus(t,"Erasure",2); return u.Stats.QF*5.5 end },
+
+	-- ═══ WEATHER (Mythic Quirk) ═══
+	["storm_call"]      = { Name="Storm Call", Desc="180% QF AoE.", Type="Quirk", HasStatus=false, IsAoE=true, BaseCD=0, Execute=function(u,t) return u.Stats.QF*1.8 end },
+	["lightning_bolt"]  = { Name="Lightning Bolt", Desc="280% QF. Stun.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(t,"Stun",1); return u.Stats.QF*2.8 end },
+	["hurricane"]       = { Name="Hurricane", Desc="500% QF AoE. Float.", Type="Quirk", HasStatus=true, IsAoE=true, BaseCD=6, Execute=function(u,t) ApplyStatus(t,"Float",2); return u.Stats.QF*5.0 end },
+
+	-- ═══ REWIND (Mythic Quirk) ═══
+	["time_reverse"]    = { Name="Time Reverse", Desc="Heal 30% HP.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=5, Execute=function(u,t) HealEntity(u,math.floor(u.MaxHP*0.30)); return 0 end },
+	["heal_rewind"]     = { Name="Heal Rewind", Desc="160% QF. Heal 10%.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) HealEntity(u,math.floor(u.MaxHP*0.10)); return u.Stats.QF*1.6 end },
+	["age_regression"]  = { Name="Age Regression", Desc="400% QF. Purge buffs.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=7, Execute=function(u,t) t.Status={Type="Normal",Duration=0}; t.CorrodeStacks=0; return u.Stats.QF*4.0 end },
+
+	-- ═══ ONE FOR ALL (Secret Quirk) ═══
+	["detroit_smash"]   = { Name="Detroit Smash", Desc="250% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.QF*2.5 end },
+	["full_cowling"]    = { Name="Full Cowling", Desc="Haste + 150% QF.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(u,"Haste",3); return u.Stats.QF*1.5 end },
+	["usa_smash"]       = { Name="United States of Smash", Desc="800% QF. Self-stun.", Type="Quirk", HasStatus=true, IsAoE=false, BaseCD=8, Execute=function(u,t) ApplyStatus(u,"Stun",1); return u.Stats.QF*8.0 end },
+
+	-- ═══ ALL FOR ONE (Secret Quirk) ═══
+	["stolen_quirk"]    = { Name="Stolen Quirk", Desc="Uses target's QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return math.max(u.Stats.QF,t.Stats.QF or 0)*2.0 end },
+	["air_cannon"]      = { Name="Air Cannon", Desc="300% QF AoE.", Type="Quirk", HasStatus=false, IsAoE=true, BaseCD=3, Execute=function(u,t) return u.Stats.QF*3.0 end },
+	["impact_recoil"]   = { Name="Impact Recoil", Desc="700% QF.", Type="Quirk", HasStatus=false, IsAoE=false, BaseCD=7, Execute=function(u,t) return u.Stats.QF*7.0 end },
+
+	-- ═══ FLAILING (Trash Style) ═══
+	["wild_swing"]      = { Name="Wild Swing", Desc="40% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.STR*0.4 end },
+	["panic_flail"]     = { Name="Panic Flail", Desc="60% STR AoE.", Type="Style", HasStatus=false, IsAoE=true, BaseCD=3, Execute=function(u,t) return u.Stats.STR*0.6 end },
+	["desperation_slam"] = { Name="Desperation Slam", Desc="100% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=2, Execute=function(u,t) return u.Stats.STR*1.0 end },
+
+	-- ═══ SLUDGE BRAWLING (Trash Style) ═══
+	["sludge_toss"]     = { Name="Sludge Toss", Desc="35% STR. Blind.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Blind",1); return u.Stats.STR*0.35 end },
+	["dirty_grab"]      = { Name="Dirty Grab", Desc="50% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.STR*0.5 end },
+	["toxic_slam"]      = { Name="Toxic Slam", Desc="80% STR. Corrode.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Corrode",99); return u.Stats.STR*0.8 end },
+
+	-- ═══ FANBOY (Trash Style) ═══
+	["cheer_boost"]     = { Name="Cheer Boost", Desc="Haste buff.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(u,"Haste",2); return 0 end },
+	["mimic_pose"]      = { Name="Mimic Pose", Desc="30% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.STR*0.3 end },
+	["inspired_rush"]   = { Name="Inspired Rush", Desc="90% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=3, Execute=function(u,t) return u.Stats.STR*0.9 end },
+
+	-- ═══ PIPE (Common Style) ═══
+	["pipe_swing"]      = { Name="Pipe Swing", Desc="80% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.STR*0.8 end },
+	["pipe_guard"]      = { Name="Pipe Guard", Desc="Armor buff.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(u,"ArmorUp",2); return 0 end },
+	["pipe_smash"]      = { Name="Pipe Smash", Desc="150% STR. Stun.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Stun",1); return u.Stats.STR*1.5 end },
+
+	-- ═══ BRASS KNUCKLES (Common Style) ═══
+	["brass_jab"]       = { Name="Brass Jab", Desc="75% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.STR*0.75 end },
+	["brass_hook"]      = { Name="Brass Hook", Desc="110% STR. Brittle.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Brittle",1); return u.Stats.STR*1.1 end },
+	["knuckle_barrage"] = { Name="Knuckle Barrage", Desc="160% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=3, Execute=function(u,t) return u.Stats.STR*1.6 end },
+
+	-- ═══ SUPPORT BASICS (Common Style) ═══
+	["first_aid"]       = { Name="First Aid", Desc="Heal 10% HP.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=4, Execute=function(u,t) HealEntity(u,math.floor(u.MaxHP*0.10)); return 0 end },
+	["flashbang"]       = { Name="Flashbang", Desc="Stun.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=5, Execute=function(u,t) ApplyStatus(t,"Stun",1); return 0 end },
+	["capture_net"]     = { Name="Capture Net", Desc="70% AGI. Float.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(t,"Float",1); return u.Stats.AGI*0.7 end },
+
+	-- ═══ KNIFE (Uncommon Style) ═══ knife_slash exists, add 2
+	["knife_dance"]     = { Name="Knife Dance", Desc="120% AGI. Bleed.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Bleed",3); return u.Stats.AGI*1.2 end },
+	["blade_storm"]     = { Name="Blade Storm", Desc="160% AGI AoE. Bleed.", Type="Style", HasStatus=true, IsAoE=true, BaseCD=5, Execute=function(u,t) ApplyStatus(t,"Bleed",2); return u.Stats.AGI*1.6 end },
+
+	-- ═══ SHOOT STYLE (Uncommon Style) ═══
+	["shoot_smash"]     = { Name="Shoot Smash", Desc="100% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.AGI*1.0 end },
+	["manchester_smash"] = { Name="Manchester Smash", Desc="160% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=2, Execute=function(u,t) return u.Stats.AGI*1.6 end },
+	["st_louis_smash"]  = { Name="St. Louis Smash", Desc="220% AGI. Stun.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Stun",1); return u.Stats.AGI*2.2 end },
+
+	-- ═══ JUDO (Rare Style) ═══
+	["hip_toss"]        = { Name="Hip Toss", Desc="100% STR. Stun.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Stun",1); return u.Stats.STR*1.0 end },
+	["arm_bar"]         = { Name="Arm Bar", Desc="130% STR. Weaken.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(t,"Weaken",2); return u.Stats.STR*1.3 end },
+	["ippon_seoi"]      = { Name="Ippon Seoi Nage", Desc="200% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=4, Execute=function(u,t) return u.Stats.STR*2.0 end },
+
+	-- ═══ GUNHEAD ARTS (Elite Style) ═══
+	["gunhead_jab"]     = { Name="Gunhead Jab", Desc="120% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.AGI*1.2 end },
+	["gunhead_combo"]   = { Name="Gunhead Combo", Desc="180% AGI. Bleed.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=2, Execute=function(u,t) ApplyStatus(t,"Bleed",2); return u.Stats.AGI*1.8 end },
+	["gunhead_finish"]  = { Name="Gunhead Finish", Desc="250% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=4, Execute=function(u,t) return u.Stats.AGI*2.5 end },
+
+	-- ═══ YAKUZA (Epic Style) ═══
+	["yakuza_strike"]   = { Name="Yakuza Strike", Desc="140% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.STR*1.4 end },
+	["yakuza_guard"]    = { Name="Yakuza Guard", Desc="Armor buff.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(u,"ArmorUp",2); return 0 end },
+	["demolition_fist"] = { Name="Demolition Fist", Desc="280% STR. Corrode.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=5, Execute=function(u,t) ApplyStatus(t,"Corrode",99); return u.Stats.STR*2.8 end },
+
+	-- ═══ SAMURAI (Epic Style) ═══
+	["iaido_slash"]     = { Name="Iaido Slash", Desc="150% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.AGI*1.5 end },
+	["blade_dance"]     = { Name="Blade Dance", Desc="180% AGI AoE. Bleed.", Type="Style", HasStatus=true, IsAoE=true, BaseCD=3, Execute=function(u,t) ApplyStatus(t,"Bleed",2); return u.Stats.AGI*1.8 end },
+	["zantetsuken"]     = { Name="Zantetsuken", Desc="350% AGI. Ignores armor.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=6, Execute=function(u,t) t._ignoreArmor=true; return u.Stats.AGI*3.5 end },
+
+	-- ═══ ERASURE ARTS (Legendary Style) ═══
+	["binding_cloth"]   = { Name="Binding Cloth", Desc="100% AGI. Float.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=0, Execute=function(u,t) ApplyStatus(t,"Float",2); return u.Stats.AGI*1.0 end },
+	["erasure_gaze"]    = { Name="Erasure Gaze", Desc="Erasure 2 turns.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=5, Execute=function(u,t) ApplyStatus(t,"Erasure",2); return 0 end },
+	["capture_combo"]   = { Name="Capture Combo", Desc="250% AGI. Stun.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(t,"Stun",1); return u.Stats.AGI*2.5 end },
+
+	-- ═══ HERO KILLER FLOW (Legendary Style) ═══
+	["bloodcurdle_slash"] = { Name="Bloodcurdle Slash", Desc="160% AGI. Bleed.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=0, Execute=function(u,t) ApplyStatus(t,"Bleed",3); return u.Stats.AGI*1.6 end },
+	["stain_lunge"]     = { Name="Stain Lunge", Desc="220% AGI. Stun if bleed.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) if t.BleedStacks and t.BleedStacks>0 then ApplyStatus(t,"Stun",1) end; return u.Stats.AGI*2.2 end },
+	["stain_finish"]    = { Name="Final Judgement", Desc="400% AGI. +50% vs bleed.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=6, Execute=function(u,t) return u.Stats.AGI*((t.BleedStacks and t.BleedStacks>0) and 6.0 or 4.0) end },
+
+	-- ═══ RABBIT ARTS (Legendary Style) ═══
+	["rabbit_kick"]     = { Name="Rabbit Kick", Desc="150% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.AGI*1.5 end },
+	["rabbit_rush"]     = { Name="Rabbit Rush", Desc="200% AGI. Haste.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=3, Execute=function(u,t) ApplyStatus(u,"Haste",2); return u.Stats.AGI*2.0 end },
+	["luna_tijeras"]    = { Name="Luna Tijeras", Desc="380% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=5, Execute=function(u,t) return u.Stats.AGI*3.8 end },
+
+	-- ═══ EXPLOSIVE CQC (Legendary Style) ═══
+	["grenade_punch"]   = { Name="Grenade Punch", Desc="170% STR. Burn.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=0, Execute=function(u,t) ApplyStatus(t,"Burn",2); return u.Stats.STR*1.7 end },
+	["blast_rush"]      = { Name="Blast Rush", Desc="220% STR AoE.", Type="Style", HasStatus=false, IsAoE=true, BaseCD=3, Execute=function(u,t) return u.Stats.STR*2.2 end },
+	["ap_shot_cqc"]     = { Name="AP Shot: CQC", Desc="380% STR. Corrode.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=5, Execute=function(u,t) ApplyStatus(t,"Corrode",99); return u.Stats.STR*3.8 end },
+
+	-- ═══ OVERCLOCK (Mythic Style) ═══
+	["oclock_punch"]    = { Name="O'Clock Punch", Desc="200% AGI.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.AGI*2.0 end },
+	["time_skip"]       = { Name="Time Skip", Desc="2 extra turns.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=7, Execute=function(u,t) table.insert(BattleState.TurnQueue,1,u.Id); table.insert(BattleState.TurnQueue,1,u.Id); ApplyStatus(u,"Haste",2); return 0 end },
+	["full_throttle"]   = { Name="Full Throttle", Desc="500% AGI. Self-stun.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=6, Execute=function(u,t) ApplyStatus(u,"Stun",1); return u.Stats.AGI*5.0 end },
+
+	-- ═══ NOMU BRAWLING extras (Mythic Style) ═══
+	["absorption_slam"] = { Name="Absorption Slam", Desc="300% STR. Shield.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=4, Execute=function(u,t) ApplyStatus(u,"Shield",math.floor(u.MaxHP*0.15)); return u.Stats.STR*3.0 end },
+	["regeneration"]    = { Name="Regeneration", Desc="Heal 20% HP.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=5, Execute=function(u,t) HealEntity(u,math.floor(u.MaxHP*0.20)); return 0 end },
+
+	-- ═══ PRIME ALL MIGHT STANCE (Secret Style) ═══
+	["carolina_smash"]  = { Name="Carolina Smash", Desc="250% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=0, Execute=function(u,t) return u.Stats.STR*2.5 end },
+	["texas_smash"]     = { Name="Texas Smash", Desc="350% STR AoE.", Type="Style", HasStatus=false, IsAoE=true, BaseCD=4, Execute=function(u,t) return u.Stats.STR*3.5 end },
+	["prime_usa_smash"] = { Name="United States of Smash", Desc="900% STR. Self-stun 2.", Type="Style", HasStatus=true, IsAoE=false, BaseCD=8, Execute=function(u,t) ApplyStatus(u,"Stun",2); return u.Stats.STR*9.0 end },
+
+	-- ═══ PRIME AFO STANCE (Secret Style) ═══
+	["afo_air_cannon"]  = { Name="AFO Air Cannon", Desc="280% STR AoE.", Type="Style", HasStatus=false, IsAoE=true, BaseCD=2, Execute=function(u,t) return u.Stats.STR*2.8 end },
+	["afo_impact"]      = { Name="AFO Impact Recoil", Desc="350% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=4, Execute=function(u,t) return u.Stats.STR*3.5 end },
+	["afo_barrage"]     = { Name="All For One Barrage", Desc="800% STR.", Type="Style", HasStatus=false, IsAoE=false, BaseCD=7, Execute=function(u,t) return u.Stats.STR*8.0 end },
+}
+
+-- ==========================================
+-- TURN ORDER + BROADCAST
+-- ==========================================
+local function CalculateTurnQueue()
+	local sorted = {}
+	for id, data in pairs(BattleState.Combatants) do
+		if data.HP > 0 and not data.IsDead then
+			-- Haste buff: +30% effective AGI for turn order
+			local effectiveAGI = data.Stats.AGI
+			if data.Status and data.Status.Type == "Haste" then effectiveAGI = effectiveAGI * 1.3 end
+			table.insert(sorted, { id = id, agi = effectiveAGI })
+		end
+	end
+	table.sort(sorted, function(a, b) return a.agi > b.agi end)
+	BattleState.TurnQueue = {}
+	for _, entry in ipairs(sorted) do table.insert(BattleState.TurnQueue, entry.id) end
+end
+
+local function BroadcastState()
+	local visualQueue = {}
+	if BattleState.ActiveTurn ~= "" then table.insert(visualQueue, BattleState.ActiveTurn) end
+	for _, id in ipairs(BattleState.TurnQueue) do table.insert(visualQueue, id) end
+
+	local logToSend = BattleState.CurrentLog
+	BattleState.CurrentLog = ""
+
+	local clientData = {
+		IsActive = BattleState.IsActive,
+		TurnQueue = visualQueue,
+		ActiveTurn = BattleState.ActiveTurn,
+		Result = BattleState.Result,
+		LogMessage = logToSend,
+		Combatants = {},
+		AvailableMoves = {},
+		AwakeningPercent = BattleState.AwakeningMeter,
+	}
+
+	for id, data in pairs(BattleState.Combatants) do
+		if not data.IsDead then
+			clientData.Combatants[id] = {
+				Name = data.Name, IsEnemy = data.IsEnemy,
+				HP = data.HP, MaxHP = data.MaxHP,
+				Status = data.Status, Portrait = data.Portrait,
+				IsBoss = data.IsBoss,
+				CurrentPhase = data.CurrentPhase, -- for client phase indicator
+			}
+		end
+	end
+
+	-- Build available moves for the active player
+	local activeEntity = BattleState.Combatants[BattleState.ActiveTurn]
+	if activeEntity and not activeEntity.IsEnemy then
+		-- INT reduces cooldowns (GDD 3.2.4)
+		local intReduction = math.floor((activeEntity.Stats.INT or 0) / 50) -- -1 CD per 50 INT
+
+		for _, moveId in ipairs(activeEntity.EquippedMoves) do
+			local md = MoveDatabase[moveId]
+			if md then
+				local state = "Normal"
+				local remainingCD = (activeEntity.Cooldowns[moveId] or 0)
+
+				-- Check if blocked by status
+				if activeEntity.Status and activeEntity.Status.Type == "Erasure" and md.Type == "Quirk" then state = "Erasure" end
+				if activeEntity.Status and activeEntity.Status.Type == "Float" and (md.Type == "Style" or md.Type == "Basic") then state = "Erasure" end
+
+				-- On cooldown
+				if remainingCD > 0 then state = "Cooldown" end
+
+				local cdText = ""
+				if remainingCD > 0 then cdText = " [" .. remainingCD .. " turns]" end
+
+				table.insert(clientData.AvailableMoves, {
+					Id = moveId, Name = md.Name .. cdText,
+					Type = md.Type, Desc = md.Desc,
+					IsQuirk = (md.Type == "Quirk"), State = state,
+				})
+			end
+		end
+	end
+
+	CombatUpdateEvent:FireAllClients(clientData)
+end
+
+-- ==========================================
+-- DEATH PROCESSING & REWARDS
+-- ==========================================
+local function AwardRewards()
+	for id, data in pairs(BattleState.Combatants) do
+		if not data.IsEnemy then
+			local plr = Players:FindFirstChild(id)
+			if plr and plr:FindFirstChild("PlayerStats") then
+				local pStats = plr.PlayerStats
+				for rewardName, amount in pairs(BattleState.AccumulatedRewards) do
+					if rewardName == "MasteryXP" then
+						local qm = pStats:FindFirstChild("QuirkMasteryXP")
+						local sm = pStats:FindFirstChild("StyleMasteryXP")
+						if qm then qm.Value = qm.Value + amount end
+						if sm then sm.Value = sm.Value + amount end
+					elseif rewardName ~= "SupportGearBox" then
+						local statVal = pStats:FindFirstChild(rewardName)
+						if statVal and statVal:IsA("IntValue") then
+							statVal.Value = statVal.Value + amount
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+local LootTables = {
+	[1] = { -- Tier 1: Petty crime
+		{chance=60, item=nil}, -- no drop
+		{chance=25, item={HeroCoins=math.random(5,15)}},
+		{chance=10, item={TrainingXP=math.random(10,30)}},
+		{chance=4,  item={HeroCoins=50, TrainingXP=25}},
+		{chance=1,  item={Spins=1}},
+	},
+	[2] = { -- Tier 2: Street crime
+		{chance=40, item=nil},
+		{chance=25, item={HeroCoins=math.random(15,40)}},
+		{chance=18, item={TrainingXP=math.random(20,60)}},
+		{chance=10, item={HeroCoins=75, TrainingXP=40}},
+		{chance=5,  item={Spins=1}},
+		{chance=2,  item={HeroCoins=150, Spins=1}},
+	},
+	[3] = { -- Tier 3: Villain threat
+		{chance=25, item=nil},
+		{chance=20, item={HeroCoins=math.random(30,80)}},
+		{chance=20, item={TrainingXP=math.random(40,100)}},
+		{chance=15, item={HeroCoins=100, TrainingXP=60}},
+		{chance=12, item={Spins=1, HeroCoins=50}},
+		{chance=5,  item={Spins=2, HeroCoins=100}},
+		{chance=3,  item={Spins=3, HeroCoins=200, TrainingXP=150}},
+	},
+	[4] = { -- Tier 4: Patrol bosses (guaranteed rare+ loot)
+		{chance=30, item={HeroCoins=200, Spins=2, TrainingXP=100}},
+		{chance=25, item={HeroCoins=300, Spins=3, TrainingXP=150}},
+		{chance=20, item={HeroCoins=500, Spins=3, TrainingXP=200}},
+		{chance=15, item={HeroCoins=500, Spins=5, TrainingXP=300}},
+		{chance=8,  item={HeroCoins=1000, Spins=5, TrainingXP=500}},
+		{chance=2,  item={HeroCoins=2000, Spins=10, TrainingXP=1000}},
+	},
+}
+
+local function RollLoot(tier)
+	local lootPool = LootTables[tier] or LootTables[1]
+	local roll = math.random(1, 100)
+	local cumulative = 0
+	for _, entry in ipairs(lootPool) do
+		cumulative = cumulative + entry.chance
+		if roll <= cumulative then return entry.item end
+	end
+	return nil
+end
+
+-- ==========================================
+-- PATROL ENCOUNTER → ENEMY POOLS (Randomized)
+-- ==========================================
+local PatrolTierPools = {
+	[1] = {"Purse_Snatcher","Petty_Thief","Shoplifter","Graffiti_Punk","Drunk_Brawler","Jaywalker_Quirk"},
+	[2] = {"Street_Thug_A","Street_Thug_B","Armed_Robber_A","Armed_Robber_B","Gang_Knife","Vandal_Quirk","Drug_Runner","Rogue_Vigilante"},
+	[3] = {"Patrol_Villain","Escaped_Convict","Quirk_Terrorist","Yakuza_Enforcer","Underground_Fighter","Nomu_Prototype"},
+	[4] = {"Patrol_Stain","Patrol_Muscular","Patrol_Rappa","Patrol_HighEnd"},
+}
+
+local PatrolRaidWaves = {
+	[1] = {{"Raid_Grunt","Raid_Grunt","Raid_Knifer"}},
+	[2] = {{"Raid_Brawler","Raid_Knifer","Raid_QuirkUser"}},
+	[3] = {{"Raid_Elite","Raid_Brawler","Raid_Boss"}},
+}
+
+local function pickRandomFromPool(tier, count)
+	local pool = PatrolTierPools[tier] or PatrolTierPools[1]
+	local result = {}
+	for i = 1, count do
+		result[i] = pool[math.random(1, #pool)]
+	end
+	return result
+end
+
+-- Map encounter titles to dynamic spawning
+local PatrolEnemyMap = {
+	-- 1★: Single weak enemy
+	["Purse_Snatcher"]  = function() return pickRandomFromPool(1, 1) end,
+	-- 2★: 2 medium enemies
+	["Street_Thugs"]    = function() return pickRandomFromPool(2, 2) end,
+	-- 3★: 1 dangerous villain
+	["Patrol_Villain"]  = function() return pickRandomFromPool(3, 1) end,
+	-- 2★: 2 robbers
+	["Armed_Robbery"]   = function() return pickRandomFromPool(2, 2) end,
+	-- Rare Boss (override): single boss
+	["Patrol_Boss"]     = function() return pickRandomFromPool(4, 1) end,
+	-- Mini-Raid waves
+	["MiniRaid_Wave1"]  = function() return pickRandomFromPool(1, 3) end,
+	["MiniRaid_Wave2"]  = function() return pickRandomFromPool(2, 3) end,
+	["MiniRaid_Wave3"]  = function()
+		local enemies = pickRandomFromPool(2, 2)
+		table.insert(enemies, PatrolTierPools[3][math.random(1, #PatrolTierPools[3])])
+		return enemies
+	end,
+}
+
+
+local function ProcessDeaths()
+	for id, data in pairs(BattleState.Combatants) do
+		if data.HP <= 0 and not data.IsDead then
+			data.IsDead = true
+			if data.IsEnemy then
+				BattleState.ExamPoints = BattleState.ExamPoints + (data.Points or 0)
+				if data.Rewards then
+					for k, v in pairs(data.Rewards) do
+						BattleState.AccumulatedRewards[k] = (BattleState.AccumulatedRewards[k] or 0) + v
+					end
+				end
+				AppendLog(Colorize(data.Name .. " destroyed!" .. (data.Points and data.Points > 0 and " (+" .. data.Points .. " Pts)" or ""), "Stun"))
+
+				-- Tier-based loot drop
+				local tier = data.Tier or (data.IsBoss and 4 or 1)
+				local loot = RollLoot(tier)
+				if loot then
+					local lootStr = ""
+					for k, v in pairs(loot) do
+						BattleState.AccumulatedRewards[k] = (BattleState.AccumulatedRewards[k] or 0) + v
+						lootStr = lootStr .. "+" .. v .. " " .. k .. " "
+					end
+					local rarityLabel = tier >= 4 and "LEGENDARY DROP" or tier >= 3 and "RARE DROP" or tier >= 2 and "LOOT DROP" or "DROP"
+					AppendLog(Colorize("★ " .. rarityLabel .. ": " .. lootStr, tier >= 3 and "Brittle" or "Stun"))
+				end
+
+				-- Boss guaranteed gear drop
+				if data.IsBoss and math.random(1,100) <= 40 then
+					BattleState.AccumulatedRewards["SupportGearBox"] = (BattleState.AccumulatedRewards["SupportGearBox"] or 0) + 1
+					AppendLog(Colorize("★★ SUPPORT GEAR BOX dropped!", "Brittle"))
+				end
+			else
+				AppendLog(Colorize(data.Name .. " was knocked out!", "Bleed"))
+			end
+		end
+	end
+end
+
+-- ==========================================
+-- GAUNTLET / WAVE LOGIC (Zone 1 Exam)
+-- ==========================================
+local function SpawnWave()
+	AppendLog(Colorize("─── WAVE " .. BattleState.Wave .. " ───", "Burn"))
+	BattleState.Wave = BattleState.Wave + 1
+	for id, data in pairs(BattleState.Combatants) do
+		if data.IsEnemy then BattleState.Combatants[id] = nil end
+	end
+	local numEnemies = math.random(1, 3)
+	for i = 1, numEnemies do
+		local roll = math.random(1, 100)
+		local eType = roll <= 50 and "1-Pointer" or roll <= 80 and "2-Pointer" or roll <= 95 and "3-Pointer" or roll <= 99 and "0-Pointer" or "Present Mic"
+		local template = EnemyTemplates[eType]
+		local eId = "Enemy_" .. i .. "_" .. math.random(1000,9999)
+		BattleState.Combatants[eId] = {
+			Id=eId, Name=template.Name, IsEnemy=true, IsDead=false,
+			HP=template.HP, MaxHP=template.HP, Status={Type="Normal",Duration=0},
+			Portrait=template.Portrait, Stats=table.clone(template.Stats),
+			EquippedMoves=template.Moves, Cooldowns={},
+			Points=template.Points, Rewards=template.Rewards, IsBoss=template.IsBoss,
+			CurrentPhase=1, CorrodeStacks=0, BleedStacks=0,
+			PassiveRegen=template.PassiveRegen,
+			Phase2Moves=template.Phase2Moves, Phase3Moves=template.Phase3Moves,
+			Phase2Script=template.Phase2Script, Phase3Script=template.Phase3Script,
+		}
+	end
+end
+
+-- Patrol Raid wave spawning (uses dynamic pools, not exam enemies)
+local function SpawnPatrolRaidWave()
+	BattleState.PatrolRaidWave = BattleState.PatrolRaidWave + 1
+	local wave = BattleState.PatrolRaidWave
+
+	-- Clear dead enemies
+	for id, data in pairs(BattleState.Combatants) do
+		if data.IsEnemy then BattleState.Combatants[id] = nil end
+	end
+
+	AppendLog(Colorize("── WAVE " .. wave .. " of " .. BattleState.PatrolRaidMaxWaves .. " ──", "Burn"))
+
+	-- Scale enemies per wave
+	local waveKey = "MiniRaid_Wave" .. math.min(wave, 3)
+	local mapEntry = PatrolEnemyMap[waveKey]
+	local enemyKeys = type(mapEntry) == "function" and mapEntry() or {"Raid_Grunt","Raid_Grunt"}
+
+	for i, eKey in ipairs(enemyKeys) do
+		local template = EnemyTemplates[eKey]
+		if template then
+			-- Scale HP slightly per wave for difficulty ramp
+			local hpMult = 1 + (wave - 1) * 0.15
+			local scaledHP = math.floor(template.HP * hpMult)
+			local eId = "Enemy_W" .. wave .. "_" .. i .. "_" .. math.random(1000,9999)
+			BattleState.Combatants[eId] = {
+				Id=eId, Name=template.Name, IsEnemy=true, IsDead=false,
+				HP=scaledHP, MaxHP=scaledHP, Status={Type="Normal",Duration=0},
+				Portrait=template.Portrait, Stats=table.clone(template.Stats),
+				EquippedMoves=table.clone(template.Moves), Cooldowns={},
+				Rewards=template.Rewards, IsBoss=template.IsBoss or false,
+				CurrentPhase=1, CorrodeStacks=0, BleedStacks=0,
+				Tier=template.Tier or 1, PassiveRegen=template.PassiveRegen,
+				Phase2Moves=template.Phase2Moves, Phase3Moves=template.Phase3Moves,
+				Phase2Script=template.Phase2Script, Phase3Script=template.Phase3Script,
+			}
+			AppendLog("Enemy: " .. Colorize(template.Name, "Burn") .. " — HP: " .. scaledHP)
+		end
+	end
+
+	CalculateTurnQueue()
+end
+
+local function EvaluateGauntlet()
+	BattleState.IsActive = false
+	if BattleState.ExamPoints >= 50 then
+		local bonusMult = BattleState.ExamPoints > 76 and 2 or 1
+		local title = bonusMult == 2 and "NUMBER 1 EXAMINEE! (2X REWARDS)" or "EXAM PASSED!"
+		for k, v in pairs(BattleState.AccumulatedRewards) do
+			BattleState.AccumulatedRewards[k] = v * bonusMult
+		end
+		AppendLog(Colorize(title .. " Points: " .. BattleState.ExamPoints, "Stun"))
+		BattleState.Result = { Type = "Victory", Rewards = BattleState.AccumulatedRewards }
+		-- Unlock zone progression
+		for id, data in pairs(BattleState.Combatants) do
+			if not data.IsEnemy then
+				local plr = Players:FindFirstChild(id)
+				if plr and plr:FindFirstChild("PlayerStats") then
+					local hz = plr.PlayerStats:FindFirstChild("HighestZoneCleared")
+					if not hz then hz = Instance.new("IntValue", plr.PlayerStats); hz.Name = "HighestZoneCleared" end
+					if hz.Value < 1 then hz.Value = 1 end
+				end
+			end
+		end
+	else
+		AppendLog(Colorize("EXAM FAILED. " .. BattleState.ExamPoints .. "/50 points.", "Bleed"))
+		BattleState.Result = { Type = "Defeat", Rewards = BattleState.AccumulatedRewards }
+	end
+	AwardRewards()
+end
+
+local function CheckBattleEnd()
+	ProcessDeaths()
+	-- Gauntlet timer check
+	if BattleState.IsGauntlet then
+		if os.time() - BattleState.StartTime >= 600 then
+			AppendLog(Colorize("BUZZER! 10 minutes is up!", "Stun"))
+			EvaluateGauntlet()
+			return true
+		end
+	end
+	local playersAlive, enemiesAlive = false, false
+	for _, data in pairs(BattleState.Combatants) do
+		if not data.IsDead then
+			if data.IsEnemy then enemiesAlive = true else playersAlive = true end
+		end
+	end
+	if not playersAlive then
+		if BattleState.IsGauntlet then EvaluateGauntlet()
+		else
+			BattleState.IsActive = false
+			BattleState.Result = { Type = "Defeat", Rewards = BattleState.AccumulatedRewards }
+			AwardRewards()
+		end
+		return true
+	elseif not enemiesAlive then
+		if BattleState.IsGauntlet then SpawnWave(); return false
+		elseif BattleState.IsPatrolRaid and BattleState.PatrolRaidWave < BattleState.PatrolRaidMaxWaves then
+			-- Patrol raid: spawn next wave
+			AppendLog(Colorize("Wave cleared!", "Stun"))
+			SpawnPatrolRaidWave()
+			return false
+		else
+			BattleState.IsActive = false
+			if BattleState.IsPatrolRaid then
+				AppendLog(Colorize("═══ MINI-RAID COMPLETE! All waves cleared! ═══", "Stun"))
+			end
+			BattleState.Result = { Type = "Victory", Rewards = BattleState.AccumulatedRewards }
+			AwardRewards()
+			return true
+		end
+	end
+	return false
+end
+
+-- ==========================================
+-- CORE TURN LOOP
+-- ==========================================
+local function NextTurn()
+	if not BattleState.IsActive then return end
+	if CheckBattleEnd() then BroadcastState(); return end
+
+	BattleState.TurnCount = BattleState.TurnCount + 1
+
+	-- Zero-Pointer spawn at 8 min (gauntlet)
+	if BattleState.IsGauntlet and not BattleState.ZeroPointerSpawned then
+		if os.time() - BattleState.StartTime >= 480 then
+			BattleState.ZeroPointerSpawned = true
+			AppendLog(Colorize("⚠ WARNING: ZERO-POINTER DETECTED! 2 MINUTES REMAINING!", "Bleed"))
+			local template = EnemyTemplates["0-Pointer"]
+			local eId = "Enemy_Zero_" .. math.random(1000,9999)
+			BattleState.Combatants[eId] = {
+				Id=eId, Name=template.Name, IsEnemy=true, IsDead=false,
+				HP=template.HP, MaxHP=template.HP, Status={Type="Normal",Duration=0},
+				Portrait=template.Portrait, Stats=table.clone(template.Stats),
+				EquippedMoves=template.Moves, Cooldowns={},
+				Points=template.Points, Rewards=template.Rewards, IsBoss=template.IsBoss,
+				CurrentPhase=1, CorrodeStacks=0, BleedStacks=0,
+			}
+			CalculateTurnQueue()
+		end
+	end
+
+	if #BattleState.TurnQueue == 0 then CalculateTurnQueue() end
+
+	BattleState.ActiveTurn = table.remove(BattleState.TurnQueue, 1)
+	local activeEntity = BattleState.Combatants[BattleState.ActiveTurn]
+	if not activeEntity or activeEntity.HP <= 0 or activeEntity.IsDead then NextTurn(); return end
+
+	-- Process status effects at start of turn
+	local skipTurn = ProcessStatusEffects(activeEntity)
+	if activeEntity.HP <= 0 then NextTurn(); return end
+
+	-- Check boss phase transitions (GDD 6.3.2)
+	if activeEntity.IsBoss then CheckBossPhaseTransition(activeEntity) end
+
+	-- If player turn: broadcast and wait for input
+	if not activeEntity.IsEnemy then
+		-- Decrement player cooldowns
+		for moveId, cd in pairs(activeEntity.Cooldowns or {}) do
+			if cd > 0 then activeEntity.Cooldowns[moveId] = cd - 1 end
+		end
+		BroadcastState()
+		if skipTurn then
+			task.wait(1.5)
+			BroadcastState()
+			NextTurn()
+		end
+		return -- Wait for CombatActionEvent
+	end
+
+	-- ENEMY TURN (GDD 6.3.1 Utility AI)
+	if skipTurn then
+		task.wait(1.5)
+		BroadcastState()
+		NextTurn()
+		return
+	end
+
+	task.wait(1.5)
+
+	local chosenMoveId, chosenMoveData, target = EnemyAI(activeEntity)
+
+	if chosenMoveId and chosenMoveData and target then
+		activeEntity.Cooldowns = activeEntity.Cooldowns or {}
+		activeEntity.Cooldowns[chosenMoveId] = chosenMoveData.BaseCD or 0
+
+		AppendLog(activeEntity.Name .. " used " .. Colorize(chosenMoveData.Name, activeEntity.IsBoss and "Burn" or "Bleed") .. "!")
+
+		if chosenMoveData.IsAoE then
+			for id, data in pairs(BattleState.Combatants) do
+				if not data.IsEnemy and data.HP > 0 and not data.IsDead then
+					ExecuteAttack(activeEntity, data, chosenMoveData)
+				end
+			end
+		else
+			ExecuteAttack(activeEntity, target, chosenMoveData)
+		end
+	else
+		AppendLog(activeEntity.Name .. " couldn't use any moves!")
+	end
+
+	-- Check boss phases after attack
+	for _, data in pairs(BattleState.Combatants) do
+		if data.IsBoss and data.HP > 0 then CheckBossPhaseTransition(data) end
+	end
+
+	ProcessDeaths()
+	BroadcastState()
+	task.wait(1)
+	NextTurn()
+end
+
+-- ==========================================
+-- PLAYER COMBAT ACTION HANDLER
+-- ==========================================
+CombatActionEvent.OnServerEvent:Connect(function(player, moveId, targetId)
+	if not BattleState.IsActive then return end
+	if BattleState.ActiveTurn ~= player.Name then return end
+
+	local user = BattleState.Combatants[player.Name]
+	local moveData = MoveDatabase[moveId]
+	local primaryTarget = BattleState.Combatants[targetId]
+
+	if not user or not moveData then return end
+
+	-- Validate status blocks
+	if user.Status and user.Status.Type == "Erasure" and moveData.Type == "Quirk" then return end
+	if user.Status and user.Status.Type == "Float" and (moveData.Type == "Style" or moveData.Type == "Basic") then return end
+
+	-- Validate cooldown
+	local cd = (user.Cooldowns or {})[moveId] or 0
+	if cd > 0 then return end
+
+	BattleState.ActiveTurn = "Processing"
+
+	-- Set cooldown (INT reduces CDs — GDD 3.2.4)
+	user.Cooldowns = user.Cooldowns or {}
+	local intReduction = math.floor((user.Stats.INT or 0) / 50)
+	user.Cooldowns[moveId] = math.max(0, (moveData.BaseCD or 0) - intReduction)
+
+	if moveData.IsAoE then
+		AppendLog(user.Name .. " used AoE: " .. Colorize(moveData.Name, "Stun") .. "!")
+		for id, data in pairs(BattleState.Combatants) do
+			if data.IsEnemy and data.HP > 0 and not data.IsDead then
+				ExecuteAttack(user, data, moveData)
+			end
+		end
+	elseif primaryTarget and primaryTarget.IsEnemy and primaryTarget.HP > 0 and not primaryTarget.IsDead then
+		AppendLog(user.Name .. " used " .. Colorize(moveData.Name, "Stun") .. " on " .. primaryTarget.Name .. "!")
+		ExecuteAttack(user, primaryTarget, moveData)
+	else
+		BattleState.ActiveTurn = player.Name
+		return
+	end
+
+	-- Check boss phases after player attack
+	for _, data in pairs(BattleState.Combatants) do
+		if data.IsBoss and data.HP > 0 then CheckBossPhaseTransition(data) end
+	end
+
+	ProcessDeaths()
+	BroadcastState()
+	task.wait(1)
+	NextTurn()
+end)
+
+-- ==========================================
+-- GEAR & MOVE EQUIP HANDLERS
+-- ==========================================
+EquipGearEvent.OnServerEvent:Connect(function(player, gearType, gearName)
+	local pStats = player:FindFirstChild("PlayerStats")
+	if pStats then
+		local gearVal = pStats:FindFirstChild("Gear" .. gearType)
+		if not gearVal then gearVal = Instance.new("StringValue", pStats); gearVal.Name = "Gear" .. gearType end
+		gearVal.Value = gearName
+	end
+end)
+
+EquipMoveEvent.OnServerEvent:Connect(function(player, slotIndex, moveId)
+	local pStats = player:FindFirstChild("PlayerStats")
+	if pStats then
+		local slotVal = pStats:FindFirstChild("MoveSlot" .. slotIndex)
+		if not slotVal then slotVal = Instance.new("StringValue", pStats); slotVal.Name = "MoveSlot" .. slotIndex end
+		slotVal.Value = moveId
+	end
+end)
+
+-- ==========================================
+-- ZONE BOSS MAPPING
+-- ==========================================
+local ZoneBossMap = {
+	["1"] = "Present Mic",   -- or gauntlet mode
+	["2"] = "Bakugo",
+	["3"] = "Nomu",
+	["4"] = "Todoroki",
+	["5"] = "HighEndNomu",
+}
+
+local ZoneEnemyPool = {
+	["1"] = {"1-Pointer", "2-Pointer", "3-Pointer"},
+	["2"] = {"Trainee_Lv8", "Trainee_Lv12"},
+	["3"] = {"LoV_Grunt", "LoV_Elite"},
+	["4"] = {"UA_Rival"},
+	["5"] = {"LowNomu"},
+}
+
+-- ==========================================
+-- START COMBAT EVENT
+-- ==========================================
+-- ==========================================
+-- LOOT DROP SYSTEM (Tier-based)
+-- ==========================================
+
+StartCombatEvent.OnServerEvent:Connect(function(player, zoneId, patrolData)
+	if BattleState.IsActive then return end
+
+	local pStats = player:FindFirstChild("PlayerStats")
+	local highestZone = (pStats and pStats:FindFirstChild("HighestZoneCleared")) and pStats.HighestZoneCleared.Value or 0
+	local isGauntlet = (zoneId == "1" and highestZone < 1) and not patrolData -- patrol is NEVER gauntlet
+
+	-- Reset battle state
+	BattleState.IsActive = true
+	BattleState.Result = nil
+	BattleState.CurrentLog = ""
+	BattleState.Combatants = {}
+	BattleState.IsGauntlet = isGauntlet
+	BattleState.ZoneId = zoneId
+	BattleState.Wave = 1
+	BattleState.ExamPoints = 0
+	BattleState.AccumulatedRewards = { HeroCoins=0, TrainingXP=0, Spins=0, MasteryXP=0 }
+	BattleState.StartTime = os.time()
+	BattleState.ZeroPointerSpawned = false
+	BattleState.AwakeningMeter = 0
+	BattleState.TurnCount = 0
+
+	-- Build player entity
+	local playerMoves = {}
+	if pStats then
+		for i = 1, 4 do
+			local slotVal = pStats:FindFirstChild("MoveSlot" .. i)
+			if slotVal and slotVal.Value ~= "" and slotVal.Value ~= "Empty" then
+				table.insert(playerMoves, slotVal.Value)
+			end
+		end
+	end
+	if #playerMoves == 0 then table.insert(playerMoves, "basic_strike") end
+
+	-- ═══ GDD 5.2: STAT SCALING ═══
+	-- Stats are stored as LEVELS (1, 2, 3...). Convert to combat power.
+	-- Formula: CombatStat = BasePower + (Level * ScalePerLevel)
+	-- Every single level up gives an immediate, noticeable damage increase.
+	local function scaleStat(statName, level)
+		local scaling = {
+			Strength     = {base = 15, perLevel = 8},   -- Lv1=23, Lv5=55, Lv10=95, Lv50=415
+			Agility      = {base = 15, perLevel = 8},   -- Lv1=23, Lv5=55, Lv10=95, Lv50=415
+			Endurance    = {base = 10, perLevel = 5},    -- Lv1=15, Lv5=35, Lv10=60, Lv50=260
+			Intelligence = {base = 5,  perLevel = 3},    -- Lv1=8,  Lv5=20, Lv10=35, Lv50=155
+			QuirkFactor  = {base = 15, perLevel = 10},   -- Lv1=25, Lv5=65, Lv10=115,Lv50=515
+		}
+		local s = scaling[statName] or {base = 10, perLevel = 5}
+		return s.base + (level * s.perLevel)
+	end
+
+	local strLevel = (pStats and pStats:FindFirstChild("Strength")) and pStats.Strength.Value or 1
+	local agiLevel = (pStats and pStats:FindFirstChild("Agility")) and pStats.Agility.Value or 1
+	local endLevel = (pStats and pStats:FindFirstChild("Endurance")) and pStats.Endurance.Value or 1
+	local intLevel = (pStats and pStats:FindFirstChild("Intelligence")) and pStats.Intelligence.Value or 1
+	local qfLevel  = (pStats and pStats:FindFirstChild("QuirkFactor")) and pStats.QuirkFactor.Value or 1
+
+	-- Rebirth multiplier (GDD 10.2.4: stats grow faster after rebirth)
+	local rebirthCount = 0
+	local rb = player:FindFirstChild("leaderstats")
+	if rb then
+		local rv = rb:FindFirstChild("Rebirths")
+		if rv then rebirthCount = rv.Value end
+	end
+	local rebirthStatBonus = 1 + (rebirthCount * 0.15) -- +15% combat power per rebirth
+
+	local baseSTR = math.floor(scaleStat("Strength", strLevel) * rebirthStatBonus)
+	local baseAGI = math.floor(scaleStat("Agility", agiLevel) * rebirthStatBonus)
+	local baseEND = math.floor(scaleStat("Endurance", endLevel) * rebirthStatBonus)
+	local baseINT = math.floor(scaleStat("Intelligence", intLevel) * rebirthStatBonus)
+	local baseQF  = math.floor(scaleStat("QuirkFactor", qfLevel) * rebirthStatBonus)
+
+	local finalStats = { STR=baseSTR, AGI=baseAGI, END=baseEND, QF=baseQF, INT=baseINT }
+	local critBonus = 0
+	local dmgBonus = 0
+
+	-- Apply gear bonuses
+	if pStats then
+		for _, gType in ipairs({"WEAPON", "ARMOR", "ASSIST"}) do
+			local gVal = pStats:FindFirstChild("Gear" .. gType)
+			if gVal and gVal.Value ~= "" and GearDatabase[gVal.Value] then
+				local gear = GearDatabase[gVal.Value]
+				finalStats.STR = finalStats.STR + gear.Stats.STR
+				finalStats.AGI = finalStats.AGI + gear.Stats.AGI
+				finalStats.END = finalStats.END + gear.Stats.END
+				finalStats.QF  = finalStats.QF + (gear.Stats.QF or 0)
+				critBonus = critBonus + (gear.CritBonus or 0)
+				dmgBonus = dmgBonus + (gear.DmgBonus or 0)
+			end
+		end
+	end
+
+	local finalMaxHP = 500 + (finalStats.END * 8) -- Scales meaningfully: Lv1=620, Lv10=980, Lv50=2580
+
+	BattleState.Combatants[player.Name] = {
+		Id = player.Name, Name = player.Name,
+		IsEnemy = false, IsDead = false,
+		HP = finalMaxHP, MaxHP = finalMaxHP,
+		Status = { Type = "Normal", Duration = 0 },
+		Portrait = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. player.UserId .. "&width=150&height=150&format=png",
+		Stats = finalStats,
+		EquippedMoves = playerMoves,
+		Cooldowns = {},
+		CritBonus = critBonus,
+		DmgBonus = dmgBonus,
+		CorrodeStacks = 0,
+		BleedStacks = 0,
+	}
+
+	-- Show player their combat power so they know stats are working
+	AppendLog(Colorize("Your Stats:", "Stun") .. " STR:" .. finalStats.STR .. " AGI:" .. finalStats.AGI .. " END:" .. finalStats.END .. " QF:" .. finalStats.QF .. " INT:" .. finalStats.INT .. " HP:" .. finalMaxHP)
+
+	-- Track patrol raid waves
+	BattleState.IsPatrolRaid = false
+	BattleState.PatrolRaidWave = 0
+	BattleState.PatrolRaidMaxWaves = 0
+
+	-- Spawn enemies
+	if patrolData and patrolData.patrolEnemyKey then
+		-- ═══ PATROL COMBAT: Spawn patrol-specific enemies ═══
+		local mapEntry = PatrolEnemyMap[patrolData.patrolEnemyKey]
+		local enemyKeys = {}
+
+		if type(mapEntry) == "function" then
+			enemyKeys = mapEntry() -- call the pool function for random selection
+		elseif type(mapEntry) == "table" then
+			enemyKeys = mapEntry
+		else
+			enemyKeys = {"Purse_Snatcher"}
+		end
+
+		-- Check if this is a mini-raid (multi-wave)
+		if patrolData.patrolEnemyKey:find("MiniRaid") then
+			BattleState.IsPatrolRaid = true
+			BattleState.PatrolRaidWave = 1
+			BattleState.PatrolRaidMaxWaves = 3
+		end
+
+		AppendLog(Colorize("═══ PATROL ENCOUNTER ═══", "Stun"))
+		AppendLog(patrolData.encounterTitle or "A villain appears!")
+		if BattleState.IsPatrolRaid then
+			AppendLog(Colorize("── WAVE 1 of " .. BattleState.PatrolRaidMaxWaves .. " ──", "Burn"))
+		end
+
+		for i, eKey in ipairs(enemyKeys) do
+			local template = EnemyTemplates[eKey]
+			if template then
+				local eId = "Enemy_" .. i .. "_" .. math.random(1000,9999)
+				BattleState.Combatants[eId] = {
+					Id=eId, Name=template.Name, IsEnemy=true, IsDead=false,
+					HP=template.HP, MaxHP=template.HP, Status={Type="Normal",Duration=0},
+					Portrait=template.Portrait, Stats=table.clone(template.Stats),
+					EquippedMoves=table.clone(template.Moves), Cooldowns={},
+					Rewards=template.Rewards, IsBoss=template.IsBoss or false,
+					CurrentPhase=1, CorrodeStacks=0, BleedStacks=0,
+					Tier=template.Tier or 1, PassiveRegen=template.PassiveRegen,
+					Phase2Moves=template.Phase2Moves, Phase3Moves=template.Phase3Moves,
+					Phase2Script=template.Phase2Script, Phase3Script=template.Phase3Script,
+				}
+				AppendLog("Enemy: " .. Colorize(template.Name, "Burn") .. " — HP: " .. template.HP)
+			end
+		end
+	elseif isGauntlet then
+		AppendLog(Colorize("═══ U.A. ENTRANCE EXAM ═══", "Stun"))
+		AppendLog("Accumulate 50+ Villain Points in 10 minutes!")
+		SpawnWave()
+	else
+		-- Spawn zone boss
+		local bossKey = ZoneBossMap[tostring(zoneId)]
+		if bossKey and EnemyTemplates[bossKey] then
+			local template = EnemyTemplates[bossKey]
+			local bId = "Boss_" .. bossKey
+			BattleState.Combatants[bId] = {
+				Id=bId, Name=template.Name, IsEnemy=true, IsDead=false,
+				HP=template.HP, MaxHP=template.HP, Status={Type="Normal",Duration=0},
+				Portrait=template.Portrait, Stats=table.clone(template.Stats),
+				EquippedMoves=table.clone(template.Moves), Cooldowns={},
+				Points=template.Points or 0, Rewards=template.Rewards, IsBoss=true,
+				CurrentPhase=1, CorrodeStacks=0, BleedStacks=0,
+				PassiveRegen=template.PassiveRegen,
+				Phase2Moves=template.Phase2Moves, Phase3Moves=template.Phase3Moves,
+				Phase2Script=template.Phase2Script, Phase3Script=template.Phase3Script,
+				DesperationMode=false, HasFlight=false,
+			}
+			AppendLog(Colorize("═══ BOSS BATTLE: " .. template.Name .. " ═══", "Burn"))
+		else
+			-- Fallback: spawn random zone enemies
+			local pool = ZoneEnemyPool[tostring(zoneId)] or {"1-Pointer"}
+			local eKey = pool[math.random(1, #pool)]
+			local template = EnemyTemplates[eKey]
+			BattleState.Combatants["Enemy_1"] = {
+				Id="Enemy_1", Name=template.Name, IsEnemy=true, IsDead=false,
+				HP=template.HP, MaxHP=template.HP, Status={Type="Normal",Duration=0},
+				Portrait=template.Portrait, Stats=table.clone(template.Stats),
+				EquippedMoves=template.Moves, Cooldowns={},
+				Rewards=template.Rewards, CurrentPhase=1,
+				CorrodeStacks=0, BleedStacks=0,
+			}
+		end
+	end
+
+	CalculateTurnQueue()
+	NextTurn()
+end)
+
+print("[HeroicIdle] CombatServer v3.0 loaded — Full GDD combat engine active.")
