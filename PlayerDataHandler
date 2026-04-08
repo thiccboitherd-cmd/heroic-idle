@@ -1,0 +1,111 @@
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+local PlayerData = DataStoreService:GetDataStore("HeroicIdleData_V1")
+
+local function setupPlayerData(player)
+	-- Visible Leaderstats
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
+	local rebirths = Instance.new("IntValue")
+	rebirths.Name = "Rebirths"
+	rebirths.Value = 0
+	rebirths.Parent = leaderstats
+
+	-- Hidden Stats Folder
+	local stats = Instance.new("Folder")
+	stats.Name = "PlayerStats"
+	stats.Parent = player
+
+	-- Currencies
+	local heroCoins = Instance.new("IntValue", stats); heroCoins.Name = "HeroCoins"
+	local trainingXP = Instance.new("IntValue", stats); trainingXP.Name = "TrainingXP"
+	local spins = Instance.new("IntValue", stats); spins.Name = "Spins"
+
+	-- Attributes
+	local strength = Instance.new("IntValue", stats); strength.Name = "Strength"; strength.Value = 1
+	local agility = Instance.new("IntValue", stats); agility.Name = "Agility"; agility.Value = 1
+	local endurance = Instance.new("IntValue", stats); endurance.Name = "Endurance"; endurance.Value = 1
+	local intelligence = Instance.new("IntValue", stats); intelligence.Name = "Intelligence"; intelligence.Value = 1
+	local quirkFactor = Instance.new("IntValue", stats); quirkFactor.Name = "QuirkFactor"; quirkFactor.Value = 1
+
+	local activeTask = Instance.new("StringValue", stats)
+	activeTask.Name = "ActiveTask"
+	activeTask.Value = "Cleaning Beach"
+
+	-- GENETICS (This is what was missing!)
+	local currentQuirk = Instance.new("StringValue", stats); currentQuirk.Name = "CurrentQuirk"; currentQuirk.Value = "None"
+	local currentTrait = Instance.new("StringValue", stats); currentTrait.Name = "CurrentTrait"; currentTrait.Value = "None"
+	local currentStyle = Instance.new("StringValue", stats); currentStyle.Name = "CurrentStyle"; currentStyle.Value = "None"
+
+	-- Load Saved Data
+	local playerUserId = "Player_" .. player.UserId
+	local success, data = pcall(function()
+		return PlayerData:GetAsync(playerUserId)
+	end)
+
+	if success and data then
+		rebirths.Value = data.Rebirths or 0
+		heroCoins.Value = data.HeroCoins or 0
+		trainingXP.Value = data.TrainingXP or 0
+		spins.Value = data.Spins or 0
+
+		strength.Value = data.Strength or 1
+		agility.Value = data.Agility or 1
+		endurance.Value = data.Endurance or 1
+		intelligence.Value = data.Intelligence or 1
+		quirkFactor.Value = data.QuirkFactor or 1
+
+		activeTask.Value = data.ActiveTask or "Cleaning Beach"
+
+		-- Load saved genetics
+		currentQuirk.Value = data.CurrentQuirk or "None"
+		currentTrait.Value = data.CurrentTrait or "None"
+		currentStyle.Value = data.CurrentStyle or "None"
+		print("Data loaded for " .. player.Name)
+	else
+		print("New player! Created default data for " .. player.Name)
+	end
+end
+
+local function savePlayerData(player)
+	local playerUserId = "Player_" .. player.UserId
+	local stats = player:FindFirstChild("PlayerStats")
+
+	if stats then
+		local dataToSave = {
+			Rebirths = player.leaderstats.Rebirths.Value,
+			HeroCoins = stats.HeroCoins.Value,
+			TrainingXP = stats.TrainingXP.Value,
+			Spins = stats.Spins.Value,
+			Strength = stats.Strength.Value,
+			Agility = stats.Agility.Value,
+			Endurance = stats.Endurance.Value,
+			Intelligence = stats.Intelligence.Value,
+			QuirkFactor = stats.QuirkFactor.Value,
+			ActiveTask = stats.ActiveTask.Value,
+			CurrentQuirk = stats.CurrentQuirk.Value,
+			CurrentTrait = stats.CurrentTrait.Value,
+			CurrentStyle = stats.CurrentStyle.Value
+		}
+
+		local success, errorMessage = pcall(function()
+			PlayerData:SetAsync(playerUserId, dataToSave)
+		end)
+
+		if not success then
+			warn("Failed to save data for " .. player.Name .. ": " .. errorMessage)
+		end
+	end
+end
+
+Players.PlayerAdded:Connect(setupPlayerData)
+Players.PlayerRemoving:Connect(savePlayerData)
+
+-- Studio testing save override
+game:BindToClose(function()
+	for _, player in ipairs(Players:GetPlayers()) do
+		savePlayerData(player)
+	end
+end)
