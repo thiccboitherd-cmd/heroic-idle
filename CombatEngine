@@ -1,0 +1,50 @@
+local CombatEngine = {}
+
+-- Sorts combatants by Agility (Highest goes first)
+local function sortByAgility(combatants)
+	table.sort(combatants, function(a, b)
+		return a.Stats.Agility > b.Stats.Agility
+	end)
+end
+
+function CombatEngine.StartEncounter(players, enemies)
+	local combatants = {}
+
+	-- Add players and enemies to one turn-order table
+	for _, p in ipairs(players) do table.insert(combatants, p) end
+	for _, e in ipairs(enemies) do table.insert(combatants, e) end
+
+	sortByAgility(combatants)
+
+	local battleActive = true
+	local turnIndex = 1
+
+	-- Main Battle Loop
+	while battleActive do
+		local currentEntity = combatants[turnIndex]
+
+		-- Check if entity is stunned/dead before taking a turn
+		if currentEntity.IsAlive and not currentEntity.HasStatus("Stun") then
+			print(currentEntity.Name .. "'s turn!")
+
+			-- Wait for Player Input or trigger Enemy AI here
+			-- currentEntity:TakeTurn()
+
+			task.wait(1) -- Artificial delay for testing
+		elseif currentEntity.HasStatus("Stun") then
+			print(currentEntity.Name .. " is stunned! Skipping turn.")
+			currentEntity.RemoveStatus("Stun") -- Clear stun after skipping
+		end
+
+		-- Check win/loss conditions here
+		-- if allEnemiesDead then battleActive = false end
+
+		-- Move to next turn
+		turnIndex += 1
+		if turnIndex > #combatants then
+			turnIndex = 1 -- Reset round
+		end
+	end
+end
+
+return CombatEngine
