@@ -108,9 +108,13 @@ local EnemyTemplates = {
 	["Raid_QuirkUser"]   = { Name="Villain Quirk User", HP=550, Archetype="Assassin", Tier=2, Portrait="rbxassetid://10654202353", Stats={STR=45,AGI=50,END=40,QF=80}, Moves={"acid_shot","static_shock","basic_strike"}, Rewards={HeroCoins=28,TrainingXP=22,MasteryXP=18} },
 	["Raid_Boss"]        = { Name="Villain Captain", HP=1200, IsBoss=true, Archetype="Tank", Tier=3, Portrait="rbxassetid://10654202353", Stats={STR=100,AGI=50,END=90,QF=80}, Moves={"brutal_hook","heavy_strike","basic_strike","body_blow"}, Rewards={HeroCoins=80,TrainingXP=60,MasteryXP=40} },
 
-	-- Zone 2: Ground Beta
+	-- Zone 2: Ground Beta (Class 1-A Battle Trials)
 	["Trainee_Lv8"]  = { Name="Trainee Lv.8", HP=500, Stats={STR=60,AGI=50,END=40,QF=30}, Moves={"basic_strike","quick_jab"}, Rewards={TrainingXP=200,MasteryXP=30}, Portrait="rbxassetid://10654202353", Archetype="Grunt" },
 	["Trainee_Lv12"] = { Name="Trainee Lv.12", HP=800, Stats={STR=80,AGI=60,END=60,QF=50}, Moves={"basic_strike","heavy_strike","body_blow"}, Rewards={TrainingXP=350,MasteryXP=50}, Portrait="rbxassetid://10654202353", Archetype="Grunt" },
+	["Iida_BT"]      = { Name="Tenya Iida", HP=700, Stats={STR=55,AGI=110,END=45,QF=80}, Moves={"engine_kick","torque_smash","quick_jab"}, Rewards={TrainingXP=280,MasteryXP=45}, Portrait="rbxassetid://10654202353", Archetype="Assassin" },
+	["Kirishima_BT"] = { Name="Eijiro Kirishima", HP=900, Stats={STR=85,AGI=40,END=90,QF=60}, Moves={"hard_punch","red_counter","basic_strike"}, Rewards={TrainingXP=320,MasteryXP=50}, Portrait="rbxassetid://10654202353", Archetype="Tank" },
+	["Kaminari_BT"]  = { Name="Denki Kaminari", HP=550, Stats={STR=40,AGI=60,END=35,QF=95}, Moves={"static_shock","target_electro","basic_strike"}, Rewards={TrainingXP=250,MasteryXP=40}, Portrait="rbxassetid://10654202353", Archetype="Caster" },
+	["Sero_BT"]      = { Name="Hanta Sero", HP=600, Stats={STR=55,AGI=70,END=40,QF=65}, Moves={"tape_whip","tape_trap","basic_strike"}, Rewards={TrainingXP=240,MasteryXP=35}, Portrait="rbxassetid://10654202353", Archetype="Grunt" },
 
 	-- Zone 2 Boss
 	["Bakugo"]       = { Name="Katsuki Bakugo", HP=4800, Stats={STR=180,AGI=200,END=100,QF=250}, IsBoss=true, Archetype="Boss",
@@ -122,9 +126,11 @@ local EnemyTemplates = {
 		Phase2Script="selfbuff_burn", Phase3Script="desperation",
 	},
 
-	-- Zone 3: U.S.J.
+	-- Zone 3: U.S.J. (League of Villains Attack)
 	["LoV_Grunt"]    = { Name="LoV Thug", HP=600, Stats={STR=70,AGI=40,END=50,QF=20}, Moves={"basic_strike","knife_slash"}, Rewards={TrainingXP=250,MasteryXP=40}, Portrait="rbxassetid://10654202353", Archetype="Grunt" },
 	["LoV_Elite"]    = { Name="LoV Lieutenant", HP=1200, Stats={STR=100,AGI=80,END=80,QF=60}, Moves={"basic_strike","brutal_hook","knife_slash"}, Rewards={TrainingXP=500,MasteryXP=80}, Portrait="rbxassetid://10654202353", Archetype="Assassin" },
+	["Kurogiri_USJ"] = { Name="Kurogiri", HP=1000, Stats={STR=50,AGI=70,END=60,QF=120}, Moves={"weightless_float","shadow_strike","basic_strike"}, Rewards={TrainingXP=400,MasteryXP=65}, Portrait="rbxassetid://10654202353", Archetype="Caster" },
+	["Shigaraki_USJ"] = { Name="Shigaraki (Restrained)", HP=1400, Stats={STR=90,AGI=90,END=55,QF=110}, Moves={"decay_touch","knife_slash","basic_strike"}, Rewards={TrainingXP=550,MasteryXP=85}, Portrait="rbxassetid://10654202353", Archetype="Assassin" },
 
 	-- Zone 3 Boss (GDD: Nomu has 15% HP regen, must use Burn/Acid to halt)
 	["Nomu"]         = { Name="U.S.J. Nomu", HP=9000, Stats={STR=300,AGI=30,END=250,QF=0}, IsBoss=true, Archetype="Boss",
@@ -136,8 +142,12 @@ local EnemyTemplates = {
 		PassiveRegen=0.15, -- 15% HP regen per turn (halted by Burn)
 	},
 
-	-- Zone 4: Sports Festival
+	-- Zone 4: Sports Festival (Tournament Fighters)
 	["UA_Rival"]     = { Name="U.A. Rival", HP=900, Stats={STR=90,AGI=90,END=70,QF=90}, Moves={"basic_strike","hard_punch","quick_jab"}, Rewards={TrainingXP=400,MasteryXP=60}, Portrait="rbxassetid://10654202353", Archetype="Grunt" },
+	["Iida_SF"]      = { Name="Tenya Iida (Tournament)", HP=1000, Stats={STR=70,AGI=140,END=60,QF=100}, Moves={"engine_kick","recipro_extend","quick_jab"}, Rewards={TrainingXP=450,MasteryXP=70}, Portrait="rbxassetid://10654202353", Archetype="Assassin" },
+	["Tokoyami_SF"]  = { Name="Fumikage Tokoyami", HP=950, Stats={STR=65,AGI=85,END=65,QF=130}, Moves={"shadow_strike","shadow_crush","basic_strike"}, Rewards={TrainingXP=420,MasteryXP=65}, Portrait="rbxassetid://10654202353", Archetype="Caster" },
+	["Kirishima_SF"] = { Name="Eijiro Kirishima (Unbreakable)", HP=1200, Stats={STR=100,AGI=55,END=110,QF=80}, Moves={"hard_punch","red_counter","body_blow"}, Rewards={TrainingXP=480,MasteryXP=75}, Portrait="rbxassetid://10654202353", Archetype="Tank" },
+	["Momo_SF"]      = { Name="Momo Yaoyorozu", HP=850, Stats={STR=60,AGI=75,END=70,QF=110}, Moves={"capture_net","flashbang","basic_strike"}, Rewards={TrainingXP=400,MasteryXP=60}, Portrait="rbxassetid://10654202353", Archetype="Caster" },
 
 	-- Zone 4 Boss (GDD: Phase 1 Ice/Brittle, Phase 2 Fire/Burn)
 	["Todoroki"]     = { Name="Shoto Todoroki", HP=14000, Stats={STR=120,AGI=160,END=150,QF=350}, IsBoss=true, Archetype="Boss",
@@ -150,6 +160,8 @@ local EnemyTemplates = {
 
 	-- Zone 5: Hosu City
 	["LowNomu"]      = { Name="Low-Tier Nomu", HP=1500, Stats={STR=130,AGI=50,END=120,QF=0}, Moves={"brutal_hook","basic_strike"}, Rewards={TrainingXP=600,MasteryXP=80}, Portrait="rbxassetid://10654202353", Archetype="Tank" },
+	["MidNomu"]      = { Name="Mid-Tier Nomu", HP=2000, Stats={STR=180,AGI=70,END=160,QF=50}, Moves={"brutal_hook","heavy_strike","shoulder_charge","basic_strike"}, Rewards={TrainingXP=800,MasteryXP=100}, Portrait="rbxassetid://10654202353", Archetype="Tank" },
+	["WingedNomu"]   = { Name="Winged Nomu", HP=1200, Stats={STR=120,AGI=130,END=80,QF=60}, Moves={"aerial_dive","quick_jab","basic_strike"}, Rewards={TrainingXP=700,MasteryXP=90}, Portrait="rbxassetid://10654202353", Archetype="Assassin" },
 
 	-- Zone 5 Boss (GDD: Gains flight/evasion at Phase 2, regen doubles at Phase 3)
 	["HighEndNomu"]  = { Name="High-End Nomu", HP=28000, Stats={STR=400,AGI=200,END=350,QF=150}, IsBoss=true, Archetype="Boss",
@@ -342,6 +354,8 @@ local function ProcessDamage(attacker, target, rawDamage, moveData, isCrit)
 		end
 	end
 
+	-- Cap armor at 50% damage reduction max
+	armorValue = math.min(armorValue, modifiedDamage * 0.5)
 	local finalDamage = math.floor(math.max(1, modifiedDamage - armorValue))
 	target.HP = math.clamp(target.HP - finalDamage, 0, target.MaxHP)
 
@@ -1532,10 +1546,10 @@ local ZoneBossMap = {
 
 local ZoneEnemyPool = {
 	["1"] = {"1-Pointer", "2-Pointer", "3-Pointer"},
-	["2"] = {"Trainee_Lv8", "Trainee_Lv12"},
-	["3"] = {"LoV_Grunt", "LoV_Elite"},
-	["4"] = {"UA_Rival"},
-	["5"] = {"LowNomu"},
+	["2"] = {"Trainee_Lv8", "Trainee_Lv12", "Iida_BT", "Kirishima_BT", "Kaminari_BT", "Sero_BT"},
+	["3"] = {"LoV_Grunt", "LoV_Elite", "Kurogiri_USJ", "Shigaraki_USJ"},
+	["4"] = {"Iida_SF", "Tokoyami_SF", "Kirishima_SF", "Momo_SF"},
+	["5"] = {"LowNomu", "MidNomu", "WingedNomu"},
 }
 
 -- ==========================================

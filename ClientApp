@@ -3592,13 +3592,13 @@ local function BuildStoryPage()
 	local zones = {
 		{id="1", name="Zone 1: U.A. Entrance Exam", desc="Prove your worth in the practical exam against Faux Villains.", enemies="1-Pt, 2-Pt, 3-Pt Faux Villains", boss="Present Mic 🎤", locked=false,
 			phases="Phase 1: Sound Waves | Phase 2 (50%): Ear-Splitting Screech AoE | Phase 3 (20%): +25% damage, continuous sound"},
-		{id="2", name="Zone 2: Ground Beta", desc="Face off against Class 1-A in the Battle Trials.", enemies="Class 1-A Trainees", boss="Katsuki Bakugo 💥", locked=false,
+		{id="2", name="Zone 2: Ground Beta", desc="Face off against Class 1-A in the Battle Trials.", enemies="Iida, Kirishima, Kaminari, Sero", boss="Katsuki Bakugo 💥", locked=false,
 			phases="Phase 1: Explosion combos | Phase 2 (50%): AP Shot unlock, +Burn | Phase 3 (20%): Howitzer Impact, +25% dmg"},
-		{id="3", name="Zone 3: U.S.J. Facility", desc="Survive the League of Villains' ambush. Nomu has 15% HP regen!", enemies="LoV Thugs", boss="U.S.J. Nomu 🧟", locked=true,
+		{id="3", name="Zone 3: U.S.J. Facility", desc="Survive the League of Villains' ambush. Nomu has 15% HP regen!", enemies="LoV Thugs, Kurogiri, Shigaraki", boss="U.S.J. Nomu 🧟", locked=true,
 			phases="Phase 1: Standard regen | Phase 2 (50%): Regen doubles to 30% | Phase 3 (20%): Berserk mode, regen triples"},
-		{id="4", name="Zone 4: Sports Festival", desc="Compete in a televised tournament against your peers.", enemies="U.A. Rivals", boss="Shoto Todoroki 🧊🔥", locked=true,
+		{id="4", name="Zone 4: Sports Festival", desc="Compete in a televised tournament against your peers.", enemies="Iida, Tokoyami, Kirishima, Momo", boss="Shoto Todoroki 🧊🔥", locked=true,
 			phases="Phase 1: Ice only, Brittle spam | Phase 2 (50%): Fire activates, Burn DoT | Phase 3 (20%): Dual-element assault"},
-		{id="5", name="Zone 5: Hosu City", desc="Purge the streets of the Hero Killer and Nomu threat.", enemies="Low-Tier Nomus", boss="High-End Nomu 👹", locked=true,
+		{id="5", name="Zone 5: Hosu City", desc="Purge the streets of the Hero Killer and Nomu threat.", enemies="Low, Mid & Winged Nomus", boss="High-End Nomu 👹", locked=true,
 			phases="Phase 1: Standard AI | Phase 2 (50%): Gains flight/evasion | Phase 3 (20%): All moves +25%, doubled regen"},
 	}
 
