@@ -1,0 +1,40 @@
+-- Theme.lua — Place in ReplicatedStorage as a ModuleScript named "Theme"
+-- Provides centralized color/style constants for the UI
+
+local Theme = {}
+
+Theme.Colors = {
+	-- Backgrounds
+	Background       = Color3.fromRGB(14, 18, 30),
+	Panel            = Color3.fromRGB(22, 28, 46),
+	PanelHighlight   = Color3.fromRGB(30, 38, 60),
+
+	-- Text
+	Text             = Color3.fromRGB(200, 205, 220),
+	PrimaryText      = Color3.fromRGB(235, 235, 245),
+	TextMuted        = Color3.fromRGB(130, 140, 165),
+	LockedText       = Color3.fromRGB(70, 75, 90),
+	ObjectiveText    = Color3.fromRGB(80, 220, 100),
+
+	-- Accents
+	Accent           = Color3.fromRGB(115, 195, 235),
+	AccentDark       = Color3.fromRGB(0, 102, 204),
+	Gold             = Color3.fromRGB(255, 215, 0),
+	Red              = Color3.fromRGB(220, 50, 50),
+	Green            = Color3.fromRGB(50, 220, 80),
+	Purple           = Color3.fromRGB(120, 40, 180),
+}
+
+Theme.Fonts = {
+	Header = Enum.Font.GothamBlack,
+	Bold   = Enum.Font.GothamBold,
+	Normal = Enum.Font.Gotham,
+}
+
+Theme.Sizes = {
+	CornerRadius = UDim.new(0, 8),
+	StrokeThickness = 1,
+	Padding = UDim.new(0, 10),
+}
+
+return Theme
